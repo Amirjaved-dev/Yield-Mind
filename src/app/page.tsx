@@ -1,5 +1,6 @@
 import { ConnectButton } from "@/components/ConnectButton";
 import { VaultList } from "@/components/VaultList";
+import { AgentTerminal } from "@/components/AgentTerminal";
 
 export default function Home() {
   return (
@@ -16,6 +17,12 @@ export default function Home() {
         <div className="flex justify-center mb-6">
           <ConnectButton />
         </div>
+        <section className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 p-6 shadow-sm">
+          <h2 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100 mb-4">
+            Agent Terminal
+          </h2>
+          <AgentTerminal />
+        </section>
         <section className="bg-white dark:bg-zinc-900 rounded-xl border border-zinc-200 dark:border-zinc-800 p-6 shadow-sm">
           <h2 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100 mb-4">
             Available Vaults
