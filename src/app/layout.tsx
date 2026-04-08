@@ -1,9 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { headers } from "next/headers";
-import { cookieToInitialState } from "wagmi";
-import { config } from "@/lib/wagmi";
-import { Providers } from "./providers";
+import ClientProviders from "./ClientProviders";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -21,23 +18,18 @@ export const metadata: Metadata = {
   description: "YieldMind DeFi Platform",
 };
 
-export default async function RootLayout({
+export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const initialState = cookieToInitialState(
-    config,
-    (await headers()).get("cookie"),
-  );
-
   return (
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
-        <Providers initialState={initialState}>{children}</Providers>
+        <ClientProviders>{children}</ClientProviders>
       </body>
     </html>
   );
