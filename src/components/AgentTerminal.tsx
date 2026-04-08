@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback } from "react";
 import { useAccount } from "wagmi";
 import { GoalSetter, type GoalInput } from "./GoalSetter";
+import { VaultCard } from "./VaultCard";
 
 interface TerminalLine {
   id: number;
@@ -119,6 +120,7 @@ export function AgentTerminal() {
   const [lines, setLines] = useState<TerminalLine[]>([]);
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState(false);
+  const [recommendation, setRecommendation] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = useCallback(() => {
@@ -135,6 +137,7 @@ export function AgentTerminal() {
       setLines([]);
       setRunning(true);
       setDone(false);
+      setRecommendation(null);
       scrollToBottom();
 
       simulateStream(
@@ -150,9 +153,8 @@ export function AgentTerminal() {
           setDone(true);
           scrollToBottom();
         },
-        () => {
-          setRunning(false);
-          scrollToBottom();
+        (rec) => {
+          setRecommendation(rec);
         },
       );
     },
@@ -183,38 +185,52 @@ export function AgentTerminal() {
       <GoalSetter onSubmit={handleRun} disabled={running} />
 
       {isConnected && (
-        <div
-          ref={scrollRef}
-          className="rounded-xl border border-zinc-700 bg-[#0c0c0c] p-5 font-mono text-sm h-[420px] overflow-y-auto scrollbar-thin"
-        >
-          {lines.length === 0 && !running && (
-            <div className="text-zinc-600 text-center py-16">
-              Set a goal above and hit Run Agent to start
-            </div>
-          )}
+        <>
+          <div
+            ref={scrollRef}
+            className="rounded-xl border border-zinc-700 bg-[#0c0c0c] p-5 font-mono text-sm h-[420px] overflow-y-auto scrollbar-thin"
+          >
+            {lines.length === 0 && !running && (
+              <div className="text-zinc-600 text-center py-16">
+                Set a goal above and hit Run Agent to start
+              </div>
+            )}
 
-          {lines.map((line) => (
-            <div key={line.id} className={`leading-relaxed ${lineColor(line.type)}`}>
-              {line.type === "tool" && (
-                <span className="text-zinc-600">$ </span>
-              )}
-              {line.toolName && (
-                <span className="mr-2">{TOOL_LABELS[line.toolName] || line.toolName}</span>
-              )}
-              <span className="whitespace-pre-wrap">{line.text}</span>
-              {line.id === lines.length - 1 && running && line.type !== "final" && line.type !== "error" && (
-                <span className="inline-block w-2 h-4 bg-amber-400 ml-0.5 animate-pulse align-middle" />
-              )}
-            </div>
-          ))}
+            {lines.map((line) => (
+              <div key={line.id} className={`leading-relaxed ${lineColor(line.type)}`}>
+                {line.type === "tool" && (
+                  <span className="text-zinc-600">$ </span>
+                )}
+                {line.toolName && (
+                  <span className="mr-2">{TOOL_LABELS[line.toolName] || line.toolName}</span>
+                )}
+                <span className="whitespace-pre-wrap">{line.text}</span>
+                {line.id === lines.length - 1 && running && line.type !== "final" && line.type !== "error" && (
+                  <span className="inline-block w-2 h-4 bg-amber-400 ml-0.5 animate-pulse align-middle" />
+                )}
+              </div>
+            ))}
 
-          {done && (
-            <div className="mt-4 pt-3 border-t border-zinc-800 flex items-center gap-2 text-xs text-zinc-600">
-              <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
-              Agent completed successfully
-            </div>
+            {done && (
+              <div className="mt-4 pt-3 border-t border-zinc-800 flex items-center gap-2 text-xs text-zinc-600">
+                <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
+                Agent completed successfully
+              </div>
+            )}
+          </div>
+
+          {done && recommendation && (
+            <VaultCard
+              protocol="Aave V3"
+              chain="Ethereum"
+              apy={4.5}
+              tvl="$1.2B"
+              riskLevel="low"
+              reasoning={recommendation.slice(0, 800)}
+              onApprove={() => alert("Transaction execution coming soon!")}
+            />
           )}
-        </div>
+        </>
       )}
     </div>
   );
