@@ -5,6 +5,9 @@ import { useAccount } from "wagmi";
 import { GoalSetter, type GoalInput } from "./GoalSetter";
 import { VaultCard } from "./VaultCard";
 
+const USDC_MAINNET = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as const;
+const AAVE_V3_POOL = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2" as const;
+
 interface TerminalLine {
   id: number;
   type: "system" | "tool" | "result" | "thinking" | "final" | "error";
@@ -227,7 +230,30 @@ export function AgentTerminal() {
               tvl="$1.2B"
               riskLevel="low"
               reasoning={recommendation.slice(0, 800)}
-              onApprove={() => alert("Transaction execution coming soon!")}
+              tokenAddress={USDC_MAINNET}
+              spenderAddress={AAVE_V3_POOL}
+              amount="5000"
+              symbol="USDC"
+              onApproved={(hash) => {
+                setLines((prev) => [
+                  ...prev,
+                  {
+                    id: prev.length,
+                    type: "result",
+                    text: `✅ Approval confirmed — tx: ${hash.slice(0, 10)}...${hash.slice(-8)}\n   Ready to deposit. Hit the deposit button below.`,
+                  },
+                ]);
+              }}
+              onDeposited={(hash) => {
+                setLines((prev) => [
+                  ...prev,
+                  {
+                    id: prev.length,
+                    type: "result",
+                    text: `🎉 Deposit confirmed — tx: ${hash.slice(0, 10)}...${hash.slice(-8)}\n   You're now earning yield in Aave V3. Happy farming!`,
+                  },
+                ]);
+              }}
             />
           )}
         </>

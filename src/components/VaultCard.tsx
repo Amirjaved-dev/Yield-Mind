@@ -1,5 +1,9 @@
 "use client";
 
+import { useState } from "react";
+import { ApproveButton } from "./ApproveButton";
+import { DepositButton } from "./DepositButton";
+
 interface VaultCardProps {
   protocol: string;
   chain: string;
@@ -7,7 +11,12 @@ interface VaultCardProps {
   tvl: string;
   riskLevel: "low" | "medium" | "high";
   reasoning: string;
-  onApprove?: () => void;
+  tokenAddress?: `0x${string}`;
+  spenderAddress?: `0x${string}`;
+  amount?: string;
+  symbol?: string;
+  onApproved?: (hash: string) => void;
+  onDeposited?: (hash: string) => void;
 }
 
 const RISK_CONFIG = {
@@ -41,9 +50,15 @@ export function VaultCard({
   tvl,
   riskLevel,
   reasoning,
-  onApprove,
+  tokenAddress,
+  spenderAddress,
+  amount,
+  symbol,
+  onApproved,
+  onDeposited,
 }: VaultCardProps) {
   const risk = RISK_CONFIG[riskLevel];
+  const [isApproved, setIsApproved] = useState(false);
 
   return (
     <div className={`rounded-xl border ${risk.border} ${risk.bg} p-5 flex flex-col gap-4`}>
@@ -92,14 +107,37 @@ export function VaultCard({
         <p className="text-sm text-zinc-300 leading-relaxed whitespace-pre-wrap">{reasoning}</p>
       </div>
 
-      {onApprove && (
+      {tokenAddress && spenderAddress && amount ? (
+        <div className="flex flex-col gap-3">
+          <ApproveButton
+            tokenAddress={tokenAddress}
+            spenderAddress={spenderAddress}
+            amount={amount}
+            symbol={symbol || "USDC"}
+            onApproved={(hash) => {
+              setIsApproved(true);
+              onApproved?.(hash);
+            }}
+          />
+          {isApproved && (
+            <DepositButton
+              poolAddress={spenderAddress}
+              tokenAddress={tokenAddress}
+              amount={amount}
+              symbol={symbol || "USDC"}
+              protocol={protocol}
+              onDeposited={onDeposited}
+            />
+          )}
+        </div>
+      ) : onApproved ? (
         <button
-          onClick={onApprove}
+          onClick={() => onApproved("")}
           className="w-full rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-2.5 text-sm font-semibold text-black hover:from-amber-400 hover:to-orange-400 transition-all shadow-lg shadow-amber-500/10"
         >
           Approve & Execute
         </button>
-      )}
+      ) : null}
     </div>
   );
 }

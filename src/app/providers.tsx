@@ -6,7 +6,7 @@ import { WagmiProvider } from "wagmi";
 import { http } from "wagmi";
 import { mainnet, sepolia } from "wagmi/chains";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { type State, useState } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 const config = getDefaultConfig({
   appName: "YieldMind",
@@ -20,16 +20,40 @@ const config = getDefaultConfig({
 
 type Props = {
   children: React.ReactNode;
-  initialState?: State | undefined;
+  initialState?: unknown | undefined;
 };
 
 export function Providers({ children, initialState }: Props) {
-  const [queryClient] = useState(() => new QueryClient());
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            staleTime: 60 * 1000,
+            refetchOnWindowFocus: false,
+          },
+        },
+      })
+  );
+  const [hydrated, setHydrated] = useState(false);
+  const hydrateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    hydrateTimerRef.current = setTimeout(() => {
+      setHydrated(true);
+    }, 0);
+
+    return () => {
+      if (hydrateTimerRef.current) clearTimeout(hydrateTimerRef.current);
+    };
+  }, []);
 
   return (
     <WagmiProvider config={config} initialState={initialState}>
       <QueryClientProvider client={queryClient}>
-        <RainbowKitProvider>{children}</RainbowKitProvider>
+        <RainbowKitProvider>
+          {hydrated ? children : null}
+        </RainbowKitProvider>
       </QueryClientProvider>
     </WagmiProvider>
   );
