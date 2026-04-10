@@ -1,10 +1,29 @@
 "use client";
 
+import { useState } from "react";
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { Plus, Mic } from "lucide-react";
 import { ConnectButton as RainbowConnectButton } from "@rainbow-me/rainbowkit";
 
 export default function Home() {
+  const router = useRouter();
+  const [prompt, setPrompt] = useState("");
+
+  function handleSubmit() {
+    const trimmedPrompt = prompt.trim();
+    if (!trimmedPrompt) return;
+
+    router.push(`/chat?prompt=${encodeURIComponent(trimmedPrompt)}`);
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      handleSubmit();
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[#061514] text-white font-sans">
       <nav className="flex items-center justify-between px-6 py-4 max-w-7xl mx-auto">
@@ -63,6 +82,9 @@ export default function Home() {
                   <textarea
                     placeholder="Describe the yield strategy you want to execute..."
                     rows={3}
+                    value={prompt}
+                    onChange={(event) => setPrompt(event.target.value)}
+                    onKeyDown={handleKeyDown}
                     className="w-full bg-transparent text-white placeholder-gray-500 resize-none outline-none text-base leading-relaxed"
                   />
                   <div className="flex items-center justify-between mt-3 pt-2">
@@ -70,7 +92,12 @@ export default function Home() {
                       <button className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-gray-400 hover:bg-white/15 hover:text-white transition-all">
                         <Plus size={18} />
                       </button>
-                      <button className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-[#1A2726] border border-white/10 text-sm text-gray-200 hover:bg-[#223231] transition-colors">
+                      <button
+                        type="button"
+                        onClick={handleSubmit}
+                        disabled={!prompt.trim()}
+                        className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-[#1A2726] border border-white/10 text-sm text-gray-200 hover:bg-[#223231] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
                         Run Agent
                       </button>

@@ -1,10 +1,203 @@
-import { NextRequest, NextResponse } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
-import { tools } from "@/lib/claude";
-
-const anthropic = new Anthropic();
+import { NextRequest } from "next/server";
+import { tools } from "@/lib/agent-tools";
+import {
+  discoverOpportunities,
+  getPositions,
+  getQuote,
+  analyzeRisk,
+} from "@/lib/defi-data";
 
 const MAX_TOOL_ROUNDS = 10;
+const MAX_API_RETRIES = 2;
+const ZAI_CHAT_COMPLETIONS_URL = "https://api.z.ai/api/paas/v4/chat/completions";
+const ZAI_MODEL = "glm-5.1";
+
+type ToolCall = {
+  id: string;
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
+
+type ChatMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | null;
+  tool_call_id?: string;
+  tool_calls?: ToolCall[];
+};
+
+type ChatCompletionResponse = {
+  choices?: Array<{
+    message?: ChatMessage;
+  }>;
+  error?: {
+    message?: string;
+  } | string;
+};
+
+const CASUAL_PROMPT_PATTERN =
+  /^(hi|hello|hey|yo|sup|gm|good morning|good afternoon|good evening|how are you|what's up)\b[!.?]*$/i;
+
+const TOOL_LABELS: Record<string, string> = {
+  discover_opportunities: "Scanning DeFi protocols",
+  get_positions: "Fetching your positions",
+  get_quote: "Getting deposit quote",
+  analyze_risk: "Analyzing risk profile",
+};
+
+const TOOL_ICONS: Record<string, string> = {
+  discover_opportunities: "magnifying-glass",
+  get_positions: "wallet",
+  get_quote: "calculator",
+  analyze_risk: "shield",
+};
+
+const SYSTEM_PROMPT = `You are YieldMind, an expert DeFi yield optimization agent. Your job is to help users maximize their yield while managing risk appropriately.
+
+Use tools selectively, not automatically. For example:
+1. Use discover_opportunities when the user wants better yield ideas or comparisons
+2. Use get_positions when the user asks about their current portfolio or when it is necessary for a recommendation
+3. Use get_quote only when a concrete deposit or withdrawal path is being discussed
+4. Use analyze_risk when you are evaluating allocation safety or tradeoffs
+
+For casual greetings or simple small talk, reply naturally and briefly without calling tools.
+
+Always base your recommendations on actual tool results. Be specific about amounts, APYs, protocols, and risks.
+Prefer concise GitHub-flavored Markdown with short headings and bullets. Avoid oversized tables unless the user explicitly asks for a table.
+Format substantive recommendations with:
+- Summary
+- Specific actions
+- Risk assessment
+- Step-by-step instructions
+
+If you need more information from the user, ask for it before making assumptions.`;
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isCasualGreeting(goal: string): boolean {
+  return CASUAL_PROMPT_PATTERN.test(goal.trim());
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isChatCompletionResponse(
+  payload: unknown,
+): payload is ChatCompletionResponse {
+  if (!isRecord(payload)) {
+    return false;
+  }
+
+  return !("choices" in payload) || Array.isArray(payload.choices);
+}
+
+function extractErrorMessage(payload: unknown): string | null {
+  if (typeof payload === "string") {
+    return payload;
+  }
+
+  if (!isRecord(payload)) {
+    return null;
+  }
+
+  const nestedError = payload.error;
+  if (typeof nestedError === "string") {
+    return nestedError;
+  }
+
+  if (isRecord(nestedError) && typeof nestedError.message === "string") {
+    return nestedError.message;
+  }
+
+  if (typeof payload.message === "string") {
+    return payload.message;
+  }
+
+  return null;
+}
+
+function parseToolInput(rawArguments: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(rawArguments);
+    return isRecord(parsed)
+      ? parsed
+      : { error: "Tool arguments were not a JSON object." };
+  } catch {
+    return { error: "Tool arguments were not valid JSON." };
+  }
+}
+
+async function createChatCompletion(
+  messages: ChatMessage[],
+): Promise<ChatMessage> {
+  const apiKey = process.env.ZAI_API_KEY;
+
+  if (!apiKey || apiKey === "your_zai_api_key_here") {
+    throw new Error("Missing ZAI_API_KEY. Add your z.ai API key in .env.local.");
+  }
+
+  for (let attempt = 0; attempt <= MAX_API_RETRIES; attempt++) {
+    const response = await fetch(ZAI_CHAT_COMPLETIONS_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: ZAI_MODEL,
+        messages,
+        tools,
+        tool_choice: "auto",
+        max_tokens: 4096,
+        temperature: 0.3,
+      }),
+    });
+
+    const payload: unknown = await response.json().catch(() => null);
+    const shouldRetry =
+      response.status === 429 || response.status === 500 || response.status === 503;
+
+    if (!response.ok) {
+      if (shouldRetry && attempt < MAX_API_RETRIES) {
+        await sleep(500 * 2 ** attempt);
+        continue;
+      }
+
+      const message =
+        extractErrorMessage(payload) ??
+        `z.ai request failed with status ${response.status}.`;
+
+      if (response.status === 429) {
+        throw new Error(
+          "z.ai is rate-limiting requests right now. Please wait a few seconds and try again.",
+        );
+      }
+
+      throw new Error(message);
+    }
+
+    if (!isChatCompletionResponse(payload)) {
+      throw new Error("z.ai returned an unexpected response shape.");
+    }
+
+    const message = payload.choices?.[0]?.message;
+    if (!message) {
+      throw new Error("z.ai returned an empty completion response.");
+    }
+
+    return {
+      role: message.role,
+      content: message.content ?? null,
+      tool_calls: message.tool_calls,
+    };
+  }
+
+  throw new Error("z.ai request failed after multiple attempts.");
+}
 
 async function executeTool(
   name: string,
@@ -12,148 +205,41 @@ async function executeTool(
 ): Promise<string> {
   switch (name) {
     case "discover_opportunities": {
-      const chain = input.chain as string | undefined;
-      const minApy = input.min_apy as number | undefined;
-      const maxRisk = input.max_risk as string | undefined;
-      const protocol = input.protocol as string | undefined;
-
-      return JSON.stringify({
-        opportunities: [
-          {
-            protocol: "Aave V3",
-            pool: "USDC Pool",
-            chain: chain || "ethereum",
-            asset: "USDC",
-            apy: minApy && minApy > 4.5 ? 5.2 : 4.5,
-            tvl: "$1.2B",
-            risk_level: "low",
-            pool_address: "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
-          },
-          {
-            protocol: "Compound V3",
-            pool: "USDC Market",
-            chain: chain || "ethereum",
-            asset: "USDC",
-            apy: 4.8,
-            tvl: "$800M",
-            risk_level: "low",
-            pool_address: "0xc3d688B66703497DAA1929EED142621a84e5aF69",
-          },
-          {
-            protocol: "Uniswap V3",
-            pool: "USDC/ETH",
-            chain: chain || "ethereum",
-            asset: "USDC-ETH LP",
-            apy: 12.5,
-            tvl: "$450M",
-            risk_level:
-              maxRisk === "low" ? undefined : maxRisk || "medium",
-            pool_address: "0x88e6A0c2dDD261eEb0B33e1451bL8a0CfA4E9C37",
-          },
-          {
-            protocol: "Lido",
-            pool: "stETH",
-            chain: chain || "ethereum",
-            asset: "stETH",
-            apy: 3.1,
-            tvl: "$28B",
-            risk_level: "low",
-            pool_address: "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",
-          },
-        ].filter((op) => op.risk_level !== undefined),
-      });
+      const result = await discoverOpportunities(
+        input.chain as string | undefined,
+        input.min_apy as number | undefined,
+        input.max_risk as string | undefined,
+        input.protocol as string | undefined,
+      );
+      return JSON.stringify(result);
     }
 
     case "get_quote": {
-      const action = input.action as string;
-      const amount = input.amount as string;
-      const asset = input.asset as string;
-
-      const numAmount = parseFloat(amount);
-      const isDeposit = action === "deposit";
-      const feeRate = 0.001;
-      const fee = (numAmount * feeRate).toFixed(2);
-
-      return JSON.stringify({
-        action,
-        asset,
-        amount_in: amount,
-        expected_amount_out: isDeposit
-          ? (numAmount * 1.045).toFixed(2)
-          : (numAmount * 0.99).toFixed(2),
-        estimated_apy: isDeposit ? "4.5%" : "N/A",
-        gas_estimate: "0.00085 ETH (~$2.80)",
-        slippage: "< 0.01%",
-        fee: `$${fee}`,
-        price_impact: "< 0.05%",
-        valid_for_seconds: 30,
-      });
+      const result = await getQuote(
+        input.action as string,
+        input.amount as string,
+        input.asset as string,
+        input.pool_address as string,
+        input.slippage_tolerance as string | undefined,
+      );
+      return JSON.stringify(result);
     }
 
     case "get_positions": {
-      const walletAddress = input.wallet_address as string;
-
-      return JSON.stringify({
-        wallet_address: walletAddress,
-        total_value: "$24,532.67",
-        positions: [
-          {
-            protocol: "Aave V3",
-            pool: "USDC Pool",
-            chain: "ethereum",
-            asset: "aUSDC",
-            deposited: "10,000 USDC",
-            current_value: "$10,450.00",
-            unrealized_pnl: "+$450.00 (+4.5%)",
-            entry_apy: "4.5%",
-            time_weighted_return: "+$127.30",
-            days_active: 45,
-          },
-          {
-            protocol: "Lido",
-            pool: "stETH",
-            chain: "ethereum",
-            asset: "stETH",
-            deposited: "5.0 ETH",
-            current_value: "$14,082.67",
-            unrealized_pnl: "+$82.67 (+0.59%)",
-            entry_apy: "3.1%",
-            time_weighted_return: "+$42.15",
-            days_active: 14,
-          },
-        ],
-      });
+      const result = await getPositions(
+        input.wallet_address as string,
+        input.protocol as string | undefined,
+        input.chain as string | undefined,
+      );
+      return JSON.stringify(result);
     }
 
     case "analyze_risk": {
-      const positions = input.positions as Array<Record<string, unknown>> | undefined;
-      const timeHorizon = input.time_horizon as string | undefined;
-
-      const positionCount = positions?.length ?? 2;
-      const concentration =
-        positionCount === 1 ? "high" : positionCount <= 3 ? "medium" : "low";
-
-      return JSON.stringify({
-        overall_score: 72,
-        score_label: "Moderate Risk",
-        time_horizon: timeHorizon || "medium",
-        breakdown: {
-          smart_contract_risk: { score: 85, level: "Low", details: "Top-tier protocols with extensive audits" },
-          impermanent_loss: { score: 90, level: "Very Low", details: "No LP positions detected" },
-          liquidation_risk: { score: 75, level: "Low", details: "Healthy collateral ratios across all positions" },
-          protocol_concentration: {
-            score: concentration === "high" ? 40 : concentration === "medium" ? 60 : 80,
-            level: concentration === "high" ? "High" : concentration === "medium" ? "Medium" : "Low",
-            details: `Across ${positionCount} protocols`,
-          },
-          market_risk: { score: 65, level: "Medium", details: "Exposure to single-asset volatility" },
-        },
-        recommendations: [
-          "Consider diversifying across additional chains to reduce L1-specific risks",
-          "Current stablecoin-heavy allocation provides good downside protection",
-          "Monitor Aave health factors if planning to add leveraged positions",
-        ],
-      });
+      const result = await analyzeRisk(
+        input.positions as Array<Record<string, unknown>> | undefined,
+        input.time_horizon as string | undefined,
+      );
+      return JSON.stringify(result);
     }
 
     default:
@@ -161,102 +247,217 @@ async function executeTool(
   }
 }
 
-export async function POST(req: NextRequest) {
+function getToolResultSummary(toolName: string, resultJson: string): string {
   try {
-    const body = await req.json();
-    const { goal, wallet_address } = body;
-
-    if (!goal || !wallet_address) {
-      return NextResponse.json(
-        { error: "Missing required fields: goal and wallet_address" },
-        { status: 400 },
-      );
+    const data = JSON.parse(resultJson);
+    switch (toolName) {
+      case "discover_opportunities":
+        return `Found ${(data.opportunities || []).length} opportunities`;
+      case "get_positions":
+        return `Retrieved ${(data.positions || []).length} positions`;
+      case "get_quote":
+        return `Got quote for ${(data.action || "transaction")}`;
+      case "analyze_risk":
+        return `Risk score: ${data.overall_risk_level || "calculated"}`;
+      default:
+        return "Completed";
     }
+  } catch {
+    return "Completed";
+  }
+}
 
-    const systemPrompt = `You are YieldMind, an expert DeFi yield optimization agent. Your job is to help users maximize their yield while managing risk appropriately.
+const SSE_HEADERS: Record<string, string> = {
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache, no-transform",
+  Connection: "keep-alive",
+};
 
-When the user gives you a goal, you should:
-1. Use discover_opportunities to find relevant yield opportunities
-2. Use get_positions to understand their current portfolio
-3. Use get_quote to get specific deposit/withdrawal quotes when needed
-4. Use analyze_risk to evaluate the risk profile of any recommendation
-
-Always base your recommendations on actual tool results. Be specific about amounts, APYs, protocols, and risks.
-Format your final response as a clear recommendation with:
-- Summary of what you recommend
-- Specific actions to take (which protocol, how much, expected APY)
-- Risk assessment
-- Step-by-step instructions
-
-If you need more information from the user, ask for it before making assumptions.`;
-
-    const messages: Anthropic.MessageParam[] = [
-      {
-        role: "user",
-        content: `My goal: ${goal}\nMy wallet address: ${wallet_address}`,
-      },
-    ];
-
-    let round = 0;
-    let finalMessage: Anthropic.TextBlockParam | null = null;
-
-    while (round < MAX_TOOL_ROUNDS) {
-      round++;
-
-      const response = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 4096,
-        system: systemPrompt,
-        tools: tools as unknown as Anthropic.Tool[],
-        messages,
-      });
-
-      const contentBlocks = response.content;
-
-      const toolUseBlocks = contentBlocks.filter(
-        (block): block is Anthropic.ToolUseBlock => block.type === "tool_use",
+function createErrorStream(message: string) {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(
+        encoder.encode(
+          `event: error\ndata: ${JSON.stringify({ message })}\n\n`,
+        ),
       );
-      const textBlocks = contentBlocks.filter(
-        (block): block is Anthropic.TextBlock => block.type === "text",
-      );
+      controller.close();
+    },
+  });
+  return new Response(stream, { headers: SSE_HEADERS });
+}
 
-      if (toolUseBlocks.length === 0) {
-        finalMessage = textBlocks[0] ?? null;
-        break;
+function createGreetingStream(greeting: string) {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      function send(type: string, data: object = {}) {
+        try {
+          controller.enqueue(
+            encoder.encode(
+              `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`,
+            ),
+          );
+        } catch {
+          // stream closed
+        }
       }
 
-      messages.push({
-        role: "assistant",
-        content: contentBlocks,
-      });
+      send("thinking");
+      await new Promise((r) => setTimeout(r, 500));
+      send("clear");
 
-      const toolResults = await Promise.all(
-        toolUseBlocks.map(async (toolBlock) => {
-          const result = await executeTool(toolBlock.name, toolBlock.input as Record<string, unknown>);
-          return {
-            type: "tool_result" as const,
-            tool_use_id: toolBlock.id,
-            content: result,
-          };
-        }),
-      );
+      const chunks = greeting.split(/(\s+)/);
+      for (const chunk of chunks) {
+        send("token", { content: chunk });
+        await new Promise((r) => setTimeout(r, 18));
+      }
 
-      messages.push({ role: "user", content: toolResults });
-    }
+      send("done");
+      controller.close();
+    },
+  });
+  return new Response(stream, { headers: SSE_HEADERS });
+}
 
-    const recommendation = finalMessage?.text ?? "Unable to generate a recommendation. Please try again.";
-
-    return NextResponse.json({
-      recommendation,
-      rounds_used: round,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error("Agent loop error:", error);
-
-    const message =
-      error instanceof Error ? error.message : "Unknown error occurred";
-
-    return NextResponse.json({ error: message }, { status: 500 });
+export async function POST(req: NextRequest) {
+  let body: { goal?: string; wallet_address?: string };
+  try {
+    body = await req.json();
+  } catch {
+    return createErrorStream("Invalid request body.");
   }
+
+  const { goal, wallet_address } = body;
+
+  if (!goal || !wallet_address) {
+    return createErrorStream(
+      "Missing required fields: goal and wallet_address",
+    );
+  }
+
+  if (isCasualGreeting(goal)) {
+    return createGreetingStream(
+      "Hey! I can help you compare DeFi yields, review your current positions, assess risk, or prepare a deposit quote. Tell me what you want to optimize and I'll keep it concise.",
+    );
+  }
+
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      function send(type: string, data: object = {}) {
+        try {
+          controller.enqueue(
+            encoder.encode(
+              `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`,
+            ),
+          );
+        } catch {
+          // stream already closed
+        }
+      }
+
+      try {
+        const messages: ChatMessage[] = [
+          {
+            role: "system",
+            content: SYSTEM_PROMPT,
+          },
+          {
+            role: "user",
+            content: `My goal: ${goal}\nMy wallet address: ${wallet_address}`,
+          },
+        ];
+
+        let round = 0;
+        let finalMessage: string | null = null;
+        let stepIndex = 0;
+
+        send("step", { index: stepIndex++, label: "Understanding your request", icon: "brain" });
+
+        while (round < MAX_TOOL_ROUNDS) {
+          round++;
+
+          send("thinking", { message: round > 1 ? "Analyzing tool results..." : "Thinking about the best approach..." });
+
+          const assistantMessage = await createChatCompletion(messages);
+          const toolCalls = assistantMessage.tool_calls ?? [];
+
+          if (toolCalls.length === 0) {
+            finalMessage = assistantMessage.content;
+            send("step", { index: stepIndex++, label: "Generating recommendation", icon: "sparkles", status: "active" });
+            break;
+          }
+
+          messages.push({
+            role: "assistant",
+            content: assistantMessage.content,
+            tool_calls: toolCalls,
+          });
+
+          for (const toolCall of toolCalls) {
+            const toolName = toolCall.function.name;
+            const label = TOOL_LABELS[toolName] || `Calling ${toolName}`;
+            const icon = TOOL_ICONS[toolName] || "wrench";
+
+            send("step", { index: stepIndex, label, icon, status: "active" });
+            send("tool_call", {
+              tool: toolName,
+              label: `${label}...`,
+              icon,
+            });
+
+            const startTime = Date.now();
+            const result = await executeTool(
+              toolName,
+              parseToolInput(toolCall.function.arguments),
+            );
+            const duration = Date.now() - startTime;
+
+            const summary = getToolResultSummary(toolName, result);
+            send("tool_result", {
+              tool: toolName,
+              label: label.replace("...", ""),
+              icon,
+              summary,
+              duration_ms: duration,
+            });
+            send("step", { index: stepIndex, label, icon, status: "done", summary });
+
+            messages.push({
+              role: "tool",
+              content: result,
+              tool_call_id: toolCall.id,
+            });
+
+            stepIndex++;
+          }
+        }
+
+        const recommendation =
+          finalMessage?.trim() ||
+          "Unable to generate a recommendation. Please try again.";
+
+        send("clear");
+
+        const chunks = recommendation.split(/(\s+)/);
+        for (const chunk of chunks) {
+          send("token", { content: chunk });
+          await new Promise((r) => setTimeout(r, 12));
+        }
+
+        send("done");
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown error occurred";
+        send("error", { message });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, { headers: SSE_HEADERS });
 }
