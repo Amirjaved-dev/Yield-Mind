@@ -130,3 +130,104 @@ body {
 .animate-fifth {
   animation: fifth 20s infinite linear;
 }
+
+/* Toast Styles */
+[data-sonner-toaster] {
+  --toast-bg: #091615 !important;
+  --toast-border: rgba(136, 255, 247, 0.1) !important;
+  --toast-color: #fff !important;
+}
+
+.toast-success {
+  border-color: rgba(52, 211, 153, 0.2) !important;
+}
+
+.toast-error {
+  border-color: rgba(239, 68, 68, 0.2) !important;
+}
+
+.toast-loading {
+  border-color: rgba(136, 255, 247, 0.1) !important;
+}
+
+/* Error Page Styles */
+.error-page {
+  min-height: 100vh;
+  background: #061514;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.error-card {
+  max-width: 28rem;
+  width: 100%;
+  border-radius: 1rem;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  background: #091615;
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.error-icon-container {
+  margin: 0 auto 1rem;
+  display: flex;
+  height: 3rem;
+  width: 3rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.error-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: white;
+  margin-bottom: 0.5rem;
+}
+
+.error-description {
+  font-size: 0.875rem;
+  color: rgb(156 163 175);
+  margin-bottom: 1rem;
+}
+
+.error-details {
+  text-align: left;
+  margin-bottom: 1rem;
+}
+
+.error-details summary {
+  font-size: 0.75rem;
+  color: rgb(107 114 128);
+  cursor: pointer;
+}
+
+.error-details summary:hover {
+  color: rgb(156 163 175);
+}
+
+.error-details pre {
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+  color: rgba(252, 165, 165, 0.8);
+  overflow: auto;
+  max-height: 8rem;
+  padding: 0.5rem;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 0.25rem;
+}
+
+.error-actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: center;
+}
+
+.error-code {
+  margin-top: 1rem;
+  font-size: 0.75rem;
+  color: rgb(75 85 99);
+}

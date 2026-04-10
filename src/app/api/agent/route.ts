@@ -1,10 +1,20 @@
 import { NextRequest } from "next/server";
 import { tools } from "@/lib/agent-tools";
+import { SYSTEM_PROMPT } from "@/lib/prompts/system-prompt";
 import {
   discoverOpportunities,
   getPositions,
   getQuote,
   analyzeRisk,
+  getTokenPrice,
+  getProtocolInfo,
+  getGasEstimate,
+  executeDeposit,
+  executeWithdraw,
+  checkTokenBalance,
+  checkAllowance,
+  prepareDeposit,
+  prepareWithdraw,
 } from "@/lib/defi-data";
 
 const MAX_TOOL_ROUNDS = 10;
@@ -40,38 +50,36 @@ const CASUAL_PROMPT_PATTERN =
   /^(hi|hello|hey|yo|sup|gm|good morning|good afternoon|good evening|how are you|what's up)\b[!.?]*$/i;
 
 const TOOL_LABELS: Record<string, string> = {
+  check_balance: "Checking token balance",
+  check_approval: "Checking approval status",
   discover_opportunities: "Scanning DeFi protocols",
   get_positions: "Fetching your positions",
   get_quote: "Getting deposit quote",
   analyze_risk: "Analyzing risk profile",
+  get_token_price: "Fetching token price",
+  get_protocol_info: "Looking up protocol",
+  get_gas_estimate: "Estimating gas costs",
+  prepare_deposit: "Preparing deposit transaction",
+  prepare_withdraw: "Preparing withdrawal transaction",
+  execute_deposit: "Preparing deposit",
+  execute_withdraw: "Preparing withdrawal",
 };
 
 const TOOL_ICONS: Record<string, string> = {
+  check_balance: "wallet",
+  check_approval: "check",
   discover_opportunities: "magnifying-glass",
   get_positions: "wallet",
   get_quote: "calculator",
   analyze_risk: "shield",
+  get_token_price: "dollar",
+  get_protocol_info: "info",
+  get_gas_estimate: "fuel",
+  prepare_deposit: "arrow-down",
+  prepare_withdraw: "arrow-up",
+  execute_deposit: "arrow-down",
+  execute_withdraw: "arrow-up",
 };
-
-const SYSTEM_PROMPT = `You are YieldMind, an expert DeFi yield optimization agent. Your job is to help users maximize their yield while managing risk appropriately.
-
-Use tools selectively, not automatically. For example:
-1. Use discover_opportunities when the user wants better yield ideas or comparisons
-2. Use get_positions when the user asks about their current portfolio or when it is necessary for a recommendation
-3. Use get_quote only when a concrete deposit or withdrawal path is being discussed
-4. Use analyze_risk when you are evaluating allocation safety or tradeoffs
-
-For casual greetings or simple small talk, reply naturally and briefly without calling tools.
-
-Always base your recommendations on actual tool results. Be specific about amounts, APYs, protocols, and risks.
-Prefer concise GitHub-flavored Markdown with short headings and bullets. Avoid oversized tables unless the user explicitly asks for a table.
-Format substantive recommendations with:
-- Summary
-- Specific actions
-- Risk assessment
-- Step-by-step instructions
-
-If you need more information from the user, ask for it before making assumptions.`;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -204,12 +212,34 @@ async function executeTool(
   input: Record<string, unknown>,
 ): Promise<string> {
   switch (name) {
+    case "check_balance": {
+      const result = await checkTokenBalance(
+        input.chain as string,
+        input.token as string,
+        input.wallet_address as string,
+      );
+      return JSON.stringify(result);
+    }
+
+    case "check_approval": {
+      const result = await checkAllowance(
+        input.chain as string,
+        input.token as string,
+        input.wallet_address as string,
+        input.spender as string,
+      );
+      return JSON.stringify(result);
+    }
+
     case "discover_opportunities": {
       const result = await discoverOpportunities(
         input.chain as string | undefined,
         input.min_apy as number | undefined,
         input.max_risk as string | undefined,
         input.protocol as string | undefined,
+        input.sort_by as string | undefined,
+        input.asset as string | undefined,
+        input.limit as number | undefined,
       );
       return JSON.stringify(result);
     }
@@ -220,16 +250,19 @@ async function executeTool(
         input.amount as string,
         input.asset as string,
         input.pool_address as string,
+        input.chain as string | undefined,
         input.slippage_tolerance as string | undefined,
       );
       return JSON.stringify(result);
     }
 
     case "get_positions": {
+      const protocols = input.protocols as string[] | undefined;
       const result = await getPositions(
         input.wallet_address as string,
-        input.protocol as string | undefined,
+        protocols,
         input.chain as string | undefined,
+        input.include_history as boolean | undefined,
       );
       return JSON.stringify(result);
     }
@@ -238,6 +271,75 @@ async function executeTool(
       const result = await analyzeRisk(
         input.positions as Array<Record<string, unknown>> | undefined,
         input.time_horizon as string | undefined,
+        input.include_oracle_risk as boolean | undefined,
+        input.check_onchain as boolean | undefined,
+      );
+      return JSON.stringify(result);
+    }
+
+    case "get_token_price": {
+      const result = await getTokenPrice(
+        input.token as string,
+        input.chain as string | undefined,
+      );
+      return JSON.stringify(result);
+    }
+
+    case "get_protocol_info": {
+      const result = await getProtocolInfo(
+        input.protocol as string,
+        input.include_audits as boolean | undefined,
+        input.include_tvl_history as boolean | undefined,
+      );
+      return JSON.stringify(result);
+    }
+
+    case "get_gas_estimate": {
+      const result = await getGasEstimate(
+        input.chain as string,
+        input.action as string | undefined,
+      );
+      return JSON.stringify(result);
+    }
+
+    case "prepare_deposit": {
+      const result = await prepareDeposit(
+        input.protocol as string,
+        input.asset as string,
+        input.amount as string,
+        input.chain as string,
+        input.wallet_address as string,
+      );
+      return JSON.stringify(result);
+    }
+
+    case "prepare_withdraw": {
+      const result = await prepareWithdraw(
+        input.position_id as string,
+        input.amount as string,
+        input.wallet_address as string,
+      );
+      return JSON.stringify(result);
+    }
+
+    case "execute_deposit": {
+      const result = await executeDeposit(
+        input.protocol as string,
+        input.asset as string,
+        input.amount as string,
+        input.chain as string,
+        input.user_confirmation as boolean,
+        input.wallet_address as string,
+      );
+      return JSON.stringify(result);
+    }
+
+    case "execute_withdraw": {
+      const result = await executeWithdraw(
+        input.position_id as string,
+        input.amount as string,
+        input.user_confirmation as boolean,
+        input.wallet_address as string,
       );
       return JSON.stringify(result);
     }
@@ -251,14 +353,31 @@ function getToolResultSummary(toolName: string, resultJson: string): string {
   try {
     const data = JSON.parse(resultJson);
     switch (toolName) {
+      case "check_balance":
+        return `Balance: ${data.balance || "0"} ${data.token || ""} (~$${data.usd_value?.toFixed(2) || "0"})`;
+      case "check_approval":
+        return data.needs_approval ? "Approval needed" : "Already approved";
       case "discover_opportunities":
-        return `Found ${(data.opportunities || []).length} opportunities`;
+        return `Found ${data.opportunities?.length || 0} of ${data.total_count || 0} opportunities`;
       case "get_positions":
-        return `Retrieved ${(data.positions || []).length} positions`;
+        return `Retrieved ${data.positions?.length || 0} positions across ${data.chains?.length || 0} chains`;
       case "get_quote":
-        return `Got quote for ${(data.action || "transaction")}`;
+        return `Quote: ${data.expected_amount_out || "N/A"} ${data.asset || ""}`;
       case "analyze_risk":
-        return `Risk score: ${data.overall_risk_level || "calculated"}`;
+        return `Risk score: ${data.overall_score || "N/A"}/100 (${data.score_label || "Unknown"})`;
+      case "get_token_price":
+        return `$${data.price?.toFixed(2) || "N/A"}`;
+      case "get_protocol_info":
+        return `${data.name || "Unknown"} - TVL: $${((data.tvl || 0) / 1e9).toFixed(1)}B`;
+      case "get_gas_estimate":
+        return `${data.gas_price_gwei || "N/A"} gwei (~${data.estimated_cost_usd || "N/A"})`;
+      case "prepare_deposit":
+        return `${data.protocol} - ${data.amount} ${data.asset} (APY: ${data.estimated_apy})`;
+      case "prepare_withdraw":
+        return `Withdraw ${data.amount} ${data.asset} from ${data.protocol}`;
+      case "execute_deposit":
+      case "execute_withdraw":
+        return data.message || "Prepared";
       default:
         return "Completed";
     }
@@ -339,7 +458,7 @@ export async function POST(req: NextRequest) {
 
   if (isCasualGreeting(goal)) {
     return createGreetingStream(
-      "Hey! I can help you compare DeFi yields, review your current positions, assess risk, or prepare a deposit quote. Tell me what you want to optimize and I'll keep it concise.",
+      "Hey! I can help you find DeFi yields, check your positions, analyze risk, or prepare deposits. What would you like to optimize?",
     );
   }
 

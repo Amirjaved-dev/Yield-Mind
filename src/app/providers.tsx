@@ -4,27 +4,42 @@ import "@rainbow-me/rainbowkit/styles.css";
 import { RainbowKitProvider, getDefaultConfig } from "@rainbow-me/rainbowkit";
 import { WagmiProvider, createConfig, type State } from "wagmi";
 import { http } from "wagmi";
-import { mainnet, sepolia } from "wagmi/chains";
+import { mainnet, sepolia, arbitrum, optimism, base, polygon, avalanche, bsc } from "wagmi/chains";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Toaster } from "react-hot-toast";
 import { useState, useEffect, useRef } from "react";
 
 const WC_PROJECT_ID = process.env.NEXT_PUBLIC_WC_PROJECT_ID || "";
 const HAS_WC = WC_PROJECT_ID !== "";
 
+const allChains = [mainnet, arbitrum, optimism, base, polygon, avalanche, bsc, sepolia];
+
 const config = HAS_WC
   ? getDefaultConfig({
       appName: "YieldMind",
       projectId: WC_PROJECT_ID,
-      chains: [mainnet, sepolia],
+      chains: allChains,
       transports: {
         [mainnet.id]: http("https://eth.drpc.org"),
+        [arbitrum.id]: http("https://arb1.arbitrum.io/rpc"),
+        [optimism.id]: http("https://mainnet.optimism.io"),
+        [base.id]: http("https://mainnet.base.org"),
+        [polygon.id]: http("https://polygon-rpc.com"),
+        [avalanche.id]: http("https://api.avax.network/ext/bc/C/rpc"),
+        [bsc.id]: http("https://bsc-dataseed.binance.org"),
         [sepolia.id]: http("https://eth-sepolia.drpc.org"),
       },
     })
   : createConfig({
-      chains: [mainnet, sepolia],
+      chains: allChains,
       transports: {
         [mainnet.id]: http("https://eth.drpc.org"),
+        [arbitrum.id]: http("https://arb1.arbitrum.io/rpc"),
+        [optimism.id]: http("https://mainnet.optimism.io"),
+        [base.id]: http("https://mainnet.base.org"),
+        [polygon.id]: http("https://polygon-rpc.com"),
+        [avalanche.id]: http("https://api.avax.network/ext/bc/C/rpc"),
+        [bsc.id]: http("https://bsc-dataseed.binance.org"),
         [sepolia.id]: http("https://eth-sepolia.drpc.org"),
       },
       ssr: true,
@@ -64,6 +79,19 @@ export function Providers({ children, initialState }: Props) {
     <WagmiProvider config={config} initialState={initialState}>
       <QueryClientProvider client={queryClient}>
         <RainbowKitProvider>
+          <Toaster
+            position="bottom-right"
+            toastOptions={{
+              duration: 4000,
+              style: {
+                background: "#091615",
+                border: "1px solid rgba(136, 255, 247, 0.1)",
+                color: "#fff",
+                fontFamily: "var(--font-geist-sans)",
+                fontSize: "14px",
+              },
+            }}
+          />
           {hydrated ? children : null}
         </RainbowKitProvider>
       </QueryClientProvider>

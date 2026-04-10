@@ -1,14 +1,34 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { Plus, Mic } from "lucide-react";
 import { ConnectButton as RainbowConnectButton } from "@rainbow-me/rainbowkit";
+import { useAccount } from "wagmi";
+import { ChainSelector } from "@/components/ChainSelector";
+import { ChainPrompt } from "@/components/ChainPrompt";
+import { usePreferredChain } from "@/hooks/use-preferred-chain";
+import { showToast } from "@/lib/toast";
 
 export default function Home() {
   const router = useRouter();
   const [prompt, setPrompt] = useState("");
+  const { address, isConnected } = useAccount();
+  const { preferredChain, setPreferredChain, shouldPrompt } = usePreferredChain();
+  const [showChainPrompt, setShowChainPrompt] = useState(false);
+
+  useEffect(() => {
+    if (isConnected && shouldPrompt) {
+      setShowChainPrompt(true);
+    }
+  }, [isConnected, shouldPrompt]);
+
+  useEffect(() => {
+    if (isConnected && address) {
+      showToast.walletConnected(address);
+    }
+  }, [isConnected, address]);
 
   function handleSubmit() {
     const trimmedPrompt = prompt.trim();
@@ -22,6 +42,11 @@ export default function Home() {
       event.preventDefault();
       handleSubmit();
     }
+  }
+
+  function handleChainSelect(chainId: number) {
+    setPreferredChain(chainId);
+    setShowChainPrompt(false);
   }
 
   return (
@@ -40,6 +65,7 @@ export default function Home() {
         </div>
 
         <div className="flex items-center gap-3">
+          <ChainSelector />
           <RainbowConnectButton />
         </div>
       </nav>
@@ -119,6 +145,12 @@ export default function Home() {
           </h2>
         </section>
       </main>
+
+      <ChainPrompt
+        isOpen={showChainPrompt}
+        onClose={() => setShowChainPrompt(false)}
+        onSelect={handleChainSelect}
+      />
     </div>
   );
 }

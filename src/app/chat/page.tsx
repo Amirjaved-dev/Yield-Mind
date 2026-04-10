@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { ConnectButton as RainbowConnectButton } from "@rainbow-me/rainbowkit";
-import { useAccount } from "wagmi";
+import { useAccount, useSwitchChain } from "wagmi";
 import {
   Wallet,
   Square,
@@ -36,6 +36,13 @@ import {
   type StoredChat,
   type StoredChatMessage,
 } from "@/hooks/use-chat-storage";
+import { TransactionModal } from "@/components/TransactionModal";
+import { 
+  useTransactionFlow, 
+  type DepositPreparation, 
+  type WithdrawPreparation,
+  type TransactionData,
+} from "@/hooks/useTransactionFlow";
 
 type MessageStatus = "thinking" | "streaming" | "done" | "error";
 
@@ -674,6 +681,19 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [value, setValue] = useState("");
+  
+  const [txModalOpen, setTxModalOpen] = useState(false);
+  const [pendingTx, setPendingTx] = useState<DepositPreparation | WithdrawPreparation | null>(null);
+  const [txType, setTxType] = useState<"deposit" | "withdraw">("deposit");
+
+  const {
+    state: txState,
+    error: txError,
+    txHash,
+    executeDeposit,
+    executeWithdraw,
+    reset: resetTxFlow,
+  } = useTransactionFlow();
 
   const {
     chats,
@@ -1007,6 +1027,44 @@ export default function ChatPage() {
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant" && (m.status === "thinking" || m.status === "streaming"));
   const showProgress = lastAssistant && lastAssistant.agentSteps && lastAssistant.agentSteps.length > 0;
 
+  const handleTransactionConfirm = useCallback(async () => {
+    if (!pendingTx) return;
+    
+    if (txType === "deposit") {
+      await executeDeposit(pendingTx as DepositPreparation);
+    } else {
+      await executeWithdraw(pendingTx as WithdrawPreparation);
+    }
+  }, [pendingTx, txType, executeDeposit, executeWithdraw]);
+
+  const getTransactionModalProps = useCallback(() => {
+    if (!pendingTx) return null;
+    
+    if (txType === "deposit") {
+      const deposit = pendingTx as DepositPreparation;
+      return {
+        transaction: deposit.transaction,
+        approvalTransaction: deposit.approval_transaction,
+        needsApproval: deposit.needs_approval,
+        protocol: deposit.protocol,
+        chain: deposit.chain,
+        asset: deposit.asset,
+        amount: deposit.amount,
+        estimatedApy: deposit.estimated_apy,
+        riskLevel: deposit.risk_level,
+      };
+    } else {
+      const withdraw = pendingTx as WithdrawPreparation;
+      return {
+        transaction: withdraw.transaction,
+        protocol: withdraw.protocol,
+        chain: withdraw.chain,
+        asset: withdraw.asset,
+        amount: withdraw.amount,
+      };
+    }
+  }, [pendingTx, txType]);
+
   return (
     <div className="flex h-[100dvh] bg-[#061514] text-gray-100 overflow-hidden">
       <div className="pointer-events-none fixed inset-x-0 top-0 h-96 bg-[radial-gradient(ellipse_at_top_center,rgba(129,255,247,0.04)_0%,transparent_70%)]" />
@@ -1086,6 +1144,16 @@ export default function ChatPage() {
           </div>
         </div>
       </div>
+
+      <TransactionModal
+        isOpen={txModalOpen}
+        onClose={() => {
+          setTxModalOpen(false);
+          setPendingTx(null);
+        }}
+        onConfirm={handleTransactionConfirm}
+        {...(getTransactionModalProps() || {})}
+      />
     </div>
   );
 }
