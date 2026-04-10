@@ -13,6 +13,7 @@ import {
   Shield,
   Calculator,
   ChevronRight,
+  ChevronDown,
   Check,
   Loader2,
   CircleDot,
@@ -43,6 +44,7 @@ import {
   type WithdrawPreparation,
   type TransactionData,
 } from "@/hooks/useTransactionFlow";
+import { MODELS, DEFAULT_MODEL, TIER_LABELS, type ModelOption } from "@/lib/models";
 
 type MessageStatus = "thinking" | "streaming" | "done" | "error";
 
@@ -53,6 +55,8 @@ type AgentStep = {
   status: "active" | "done" | "error";
   summary?: string;
   durationMs?: number;
+  input?: Record<string, unknown>;
+  inputSummary?: string;
 };
 
 type ChatMessage = {
@@ -78,20 +82,28 @@ const ICON_MAP: Record<string, React.ElementType> = {
   shield: Shield,
   wrench: Zap,
   sparkles: Sparkles,
+  check: Check,
+  "arrow-down": TrendingUp,
+  "arrow-up": TrendingUp,
+  dollar: Calculator,
+  info: CircleDot,
+  fuel: Zap,
 };
 
-function StepIcon({ name, size = 14 }: { name: string; size?: number }) {
+function StepIcon({ name, size = 14, className }: { name: string; size?: number; className?: string }) {
   const Icon = ICON_MAP[name] || CircleDot;
-  return <Icon size={size} />;
+  return <Icon size={size} className={className} />;
 }
 
-function ThinkingDots() {
+function ThinkingAnimation() {
   return (
-    <span className="inline-flex items-center gap-1 py-1">
-      <span className="h-1.5 w-1.5 rounded-full bg-[#88fff7]/60 animate-pulse" />
-      <span className="h-1.5 w-1.5 rounded-full bg-[#88fff7]/60 animate-pulse [animation-delay:150ms]" />
-      <span className="h-1.5 w-1.5 rounded-full bg-[#88fff7]/60 animate-pulse [animation-delay:300ms]" />
-    </span>
+    <div className="flex items-center gap-1.5">
+      <div className="flex gap-0.5">
+        <span className="h-1 w-1 rounded-full bg-[#88fff7] animate-bounce [animation-delay:0ms]" />
+        <span className="h-1 w-1 rounded-full bg-[#88fff7] animate-bounce [animation-delay:150ms]" />
+        <span className="h-1 w-1 rounded-full bg-[#88fff7] animate-bounce [animation-delay:300ms]" />
+      </div>
+    </div>
   );
 }
 
@@ -241,98 +253,119 @@ function AgentProgressPanel({ steps }: { steps: AgentStep[] }) {
   if (steps.length === 0) return null;
   const activeStep = steps.find((s) => s.status === "active");
   const allDone = steps.every((s) => s.status === "done");
+  const hasError = steps.some((s) => s.status === "error");
+  const completedCount = steps.filter((s) => s.status === "done").length;
 
   return (
-    <div className="mr-auto w-full max-w-3xl">
-      <div className="rounded-2xl border border-[#88fff7]/8 bg-[#091615]/80 backdrop-blur-sm overflow-hidden">
-        <div className="flex items-center gap-2.5 px-4 py-3 border-b border-white/5 bg-white/[0.02]">
-          <div className="relative flex items-center justify-center">
-            {activeStep && (
-              <div className="absolute inset-0 rounded-full bg-[#88fff7]/20 animate-ping" style={{ animationDuration: "2s" }} />
+    <div className="w-full max-w-2xl">
+      <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] overflow-hidden">
+        <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-white/[0.04] bg-white/[0.015]">
+          <div className="relative flex items-center justify-center h-4 w-4">
+            {!allDone && !hasError && (
+              <span className="absolute inset-0 rounded-full bg-[#88fff7]/30 animate-ping" style={{ animationDuration: "1.5s" }} />
             )}
-            <div
-              className={cn(
-                "relative flex items-center justify-center h-6 w-6 rounded-full transition-colors",
-                allDone ? "bg-emerald-500/20 text-emerald-400" : "bg-[#88fff7]/15 text-[#88fff7]",
-              )}
-            >
-              {allDone ? <Check size={13} strokeWidth={2.5} /> : <Zap size={13} />}
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold tracking-wide text-white/70 uppercase">Agent</span>
-            {activeStep ? (
-              <span className="flex items-center gap-1.5 text-xs text-[#88fff7]/60">
-                <Loader2 size={11} className="animate-spin" />
-                {activeStep.label}...
-              </span>
+            {hasError ? (
+              <span className="h-2 w-2 rounded-full bg-red-400/80" />
             ) : allDone ? (
-              <span className="text-xs text-emerald-400/60">Complete</span>
-            ) : null}
+              <Check size={12} strokeWidth={3} className="text-emerald-400/70" />
+            ) : (
+              <span className="h-2 w-2 rounded-full bg-[#88fff7]/70 animate-pulse" />
+            )}
+          </div>
+          <span className="text-[11px] font-medium text-white/40 tracking-wide uppercase">
+            {hasError ? "Agent Error" : allDone ? `${completedCount} Steps Completed` : activeStep?.label || "Working..."}
+          </span>
+          {!allDone && !hasError && (
+            <ThinkingAnimation />
+          )}
+          <div className="ml-auto flex items-center gap-1.5">
+            <span className="text-[10px] tabular-nums text-white/20">{completedCount}/{steps.length}</span>
+            {!allDone && (
+              <div className="h-1 w-12 rounded-full bg-white/[0.06] overflow-hidden">
+                <div 
+                  className="h-full rounded-full bg-gradient-to-r from-[#88fff7]/40 to-[#88fff7]/10 transition-all duration-500"
+                  style={{ width: `${(completedCount / steps.length) * 100}%` }}
+                />
+              </div>
+            )}
           </div>
         </div>
-        <div className="px-4 py-2.5 space-y-0.5">
-          {steps.map((step) => (
-            <div
-              key={step.id}
-              className={cn(
-                "flex items-start gap-3 px-2 py-2 rounded-lg transition-all",
-                step.status === "active" && "bg-[#88fff7]/[0.04]",
-                step.status === "done" && "opacity-70",
-              )}
-            >
-              <div className="flex items-center gap-2.5 min-w-0 shrink-0">
-                <div
-                  className={cn(
-                    "flex items-center justify-center h-5 w-5 rounded-md text-[10px] font-bold shrink-0 transition-colors",
-                    step.status === "active" && "bg-[#88fff7]/15 text-[#88fff7]",
-                    step.status === "done" && "bg-emerald-500/15 text-emerald-400",
-                    step.status === "error" && "bg-red-500/15 text-red-400",
-                  )}
-                >
-                  {step.status === "done" ? (
-                    <Check size={11} strokeWidth={2.5} />
-                  ) : step.status === "error" ? (
-                    <span className="text-[10px]">!</span>
-                  ) : (
-                    <StepIcon name={step.icon} size={11} />
-                  )}
-                </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={cn(
-                        "text-xs font-medium truncate transition-colors",
-                        step.status === "active"
-                          ? "text-white/90"
-                          : step.status === "done"
-                            ? "text-white/50"
-                            : "text-white/30",
-                      )}
-                    >
-                      {step.label}
-                    </span>
-                    {step.status === "active" && (
-                      <span className="shrink-0">
-                        <Loader2 size={10} className="text-[#88fff7]/60 animate-spin" />
-                      </span>
+
+        <div className="px-3 py-2 space-y-px">
+          {steps.map((step, idx) => {
+            const isLast = idx === steps.length - 1;
+            const isActive = step.status === "active";
+            const isDone = step.status === "done";
+            const isError = step.status === "error";
+
+            return (
+              <div key={step.id} className={cn(
+                "group relative flex items-start gap-2.5 py-1.5 px-2 rounded-lg transition-colors",
+                isActive && "bg-[#88fff7]/[0.03]",
+              )}>
+                <div className="flex flex-col items-center pt-0.5">
+                  <div className={cn(
+                    "flex items-center justify-center h-4 w-4 rounded-full shrink-0 transition-all duration-300",
+                    isDone && "bg-emerald-500/15",
+                    isError && "bg-red-500/15",
+                    isActive && "bg-[#88fff7]/15 ring-1 ring-[#88fff7]/20",
+                    (!isDone && !isError && !isActive) && "bg-white/[0.04]",
+                  )}>
+                    {isDone ? (
+                      <Check size={9} strokeWidth={2.5} className="text-emerald-400/70" />
+                    ) : isError ? (
+                      <span className="text-[8px] font-bold text-red-400/80">!</span>
+                    ) : (
+                      <StepIcon name={step.icon} size={9} className={cn(isActive ? "text-[#88fff7]" : "text-white/25")} />
                     )}
                   </div>
-                  {step.status === "done" && step.summary && (
-                    <span className="text-[11px] text-white/30 truncate block">
-                      {step.summary}
-                      {step.durationMs != null && (
-                        <span className="ml-2 text-white/20">{(step.durationMs / 1000).toFixed(1)}s</span>
-                      )}
+                  {!isLast && (
+                    <div className={cn(
+                      "w-px min-h-[14px] mt-1 transition-colors",
+                      isDone ? "bg-emerald-500/15" : "bg-white/[0.04]"
+                    )} />
+                  )}
+                </div>
+
+                <div className="flex-1 min-w-0 pt-px">
+                  <div className="flex items-center gap-1.5">
+                    <span className={cn(
+                      "text-[11px] leading-tight font-medium truncate transition-all",
+                      isActive && "text-white/85",
+                      isDone && "text-white/35",
+                      isError && "text-red-400/60",
+                      (!isDone && !isError && !isActive) && "text-white/25",
+                    )}>
+                      {step.label}
                     </span>
+                    {isActive && (
+                      <Loader2 size={9} className="text-[#88fff7]/50 animate-spin shrink-0" />
+                    )}
+                    {isDone && step.durationMs != null && (
+                      <span className="text-[9px] text-white/15 shrink-0 tabular-nums">{(step.durationMs / 1000).toFixed(1)}s</span>
+                    )}
+                  </div>
+                  
+                  {(step.inputSummary || (isDone && step.summary)) && (
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      {step.inputSummary && (
+                        <span className="inline-flex items-center gap-1 text-[9px] text-white/20 max-w-[200px] truncate">
+                          <Wallet size={7} className="shrink-0 opacity-50" />
+                          {step.inputSummary}
+                        </span>
+                      )}
+                      {isDone && step.summary && (
+                        <span className="inline-flex items-center gap-1 text-[9px] text-emerald-400/35 max-w-[220px] truncate">
+                          <Check size={7} className="shrink-0" />
+                          {step.summary}
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
-              {step.status === "active" && (
-                <ChevronRight size={12} className="text-[#88fff7]/30 mt-0.5 shrink-0 [animation:blink_1.5s_ease-in-out_infinite]" />
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>
@@ -348,14 +381,16 @@ function MessageBubble({
 }) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
-  const isToolStatus = message.status === "streaming" && /\.\.\.$/.test(message.content.trim());
-  const isTyping = message.status === "streaming" && !isToolStatus;
+  const isThinking = message.status === "thinking";
+  const isStreaming = message.status === "streaming" && message.content.length > 0;
   const isDone = message.status === "done";
+
+  if (isThinking) return null;
 
   return (
     <div
       className={cn(
-        "flex w-full max-w-3xl flex-col",
+        "flex w-full max-w-2xl flex-col",
         isUser && "ml-auto items-end",
         !isUser && !isSystem && "mr-auto items-start",
         isSystem && "mr-auto items-start",
@@ -385,17 +420,12 @@ function MessageBubble({
         )}
         {isUser || isSystem || message.status === "error" ? (
           <p className="whitespace-pre-wrap text-sm leading-relaxed">{message.content}</p>
-        ) : message.status === "done" || isTyping ? (
+        ) : (isDone || isStreaming) ? (
           <div className="relative">
             <AssistantMarkdown content={message.content} />
-            {isTyping && <BlinkingCursor />}
+            {isStreaming && <BlinkingCursor />}
           </div>
-        ) : (
-          <div className="flex items-center gap-2 text-sm text-gray-400">
-            {message.content && <span>{message.content}</span>}
-            <ThinkingDots />
-          </div>
-        )}
+        ) : null}
         {message.status === "error" && onRetry && (
           <button onClick={onRetry} className="mt-3 text-xs font-medium text-[#f59e0b] transition-colors hover:text-[#f59e0b]/80">
             Try again
@@ -442,6 +472,8 @@ function InputBar({
   value,
   disabled = false,
   isStreaming = false,
+  selectedModel,
+  onModelChange,
   onChange,
   onSubmit,
   onStop,
@@ -449,6 +481,8 @@ function InputBar({
   value: string;
   disabled?: boolean;
   isStreaming?: boolean;
+  selectedModel: string;
+  onModelChange: (model: string) => void;
   onChange: (value: string) => void;
   onSubmit: () => void;
   onStop: () => void;
@@ -494,7 +528,7 @@ function InputBar({
           className="w-full resize-none bg-transparent text-white placeholder-gray-500 outline-none text-[15px] leading-relaxed"
         />
         <div className="mt-2 flex items-center justify-between pt-1">
-          <span className="text-[11px] text-gray-600">GLM-5.1 &middot; z.ai</span>
+          <ModelSelector value={selectedModel} onChange={onModelChange} disabled={isStreaming || disabled} />
           <div className="flex items-center gap-2">
             {isStreaming ? (
               <button
@@ -520,6 +554,76 @@ function InputBar({
       <p className="mt-2.5 text-center text-[11px] text-gray-600">
         YieldMind can make mistakes. Consider checking important information.
       </p>
+    </div>
+  );
+}
+
+function ModelSelector({
+  value,
+  onChange,
+  disabled = false,
+}: {
+  value: string;
+  onChange: (model: string) => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const selected = MODELS.find((m) => m.id === value) || MODELS.find((m) => m.id === DEFAULT_MODEL)!;
+
+  useEffect(() => {
+    if (!open) return;
+    function onClose(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onClose);
+    return () => document.removeEventListener("mousedown", onClose);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => !disabled && setOpen((v) => !v)}
+        disabled={disabled}
+        className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium text-white/40 transition-colors hover:text-white/70 hover:bg-white/[0.04] cursor-pointer"
+      >
+        {selected.name}
+        <ChevronDown size={9} className={cn("text-white/20 transition-transform", open && "rotate-180")} />
+      </button>
+
+      {open && (
+        <div className="absolute bottom-full left-0 mb-1.5 w-56 rounded-lg border border-white/[0.08] bg-[#0d1817]/98 backdrop-blur-xl shadow-xl shadow-black/50 overflow-hidden z-[9999]">
+          <div className="max-h-60 overflow-y-auto py-1">
+            {MODELS.map((model) => {
+              const tier = TIER_LABELS[model.tier];
+              const isActive = model.id === value;
+              return (
+                <button
+                  key={model.id}
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onChange(model.id); setOpen(false); }}
+                  onMouseDown={(e) => e.preventDefault()}
+                  className={cn(
+                    "w-full flex items-center justify-between px-3 py-1.5 text-left transition-colors cursor-pointer",
+                    isActive ? "bg-[#88fff7]/[0.08]" : "hover:bg-white/[0.03]",
+                  )}
+                >
+                  <span className={cn(
+                    "text-xs",
+                    isActive ? "text-white/90 font-medium" : "text-white/55",
+                  )}>
+                    {model.name}
+                  </span>
+                  <span className={cn("text-[9px] px-1.5 py-px rounded", tier.color)}>
+                    {tier.label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -681,6 +785,12 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [value, setValue] = useState("");
+  const [selectedModel, setSelectedModel] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("yieldmind_model") || DEFAULT_MODEL;
+    }
+    return DEFAULT_MODEL;
+  });
   
   const [txModalOpen, setTxModalOpen] = useState(false);
   const [pendingTx, setPendingTx] = useState<DepositPreparation | WithdrawPreparation | null>(null);
@@ -719,6 +829,10 @@ export default function ChatPage() {
   const streamPromptRef = useRef<((prompt: string) => Promise<void>) | null>(null);
 
   const currentChatIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem("yieldmind_model", selectedModel);
+  }, [selectedModel]);
 
   useEffect(() => {
     if (!activeChat) {
@@ -806,13 +920,24 @@ export default function ChatPage() {
       status: "active" | "done" | "error";
       summary?: string;
       durationMs?: number;
+      input?: Record<string, unknown>;
+      inputSummary?: string;
     }) {
       setMessages((prev) =>
         prev.map((m) => {
           if (m.id !== assistantMsgId) return m;
           const steps = [...(m.agentSteps || [])];
           const existing = steps.findIndex((s) => s.id === stepData.index);
-          const step: AgentStep = { id: stepData.index, label: stepData.label, icon: stepData.icon, status: stepData.status, summary: stepData.summary, durationMs: stepData.durationMs };
+          const step: AgentStep = { 
+            id: stepData.index, 
+            label: stepData.label, 
+            icon: stepData.icon, 
+            status: stepData.status, 
+            summary: stepData.summary, 
+            durationMs: stepData.durationMs,
+            input: stepData.input,
+            inputSummary: stepData.inputSummary,
+          };
           if (existing >= 0) steps[existing] = { ...steps[existing], ...step };
           else steps.push(step);
           return { ...m, agentSteps: steps };
@@ -837,7 +962,7 @@ export default function ChatPage() {
       const response = await fetch("/api/agent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ goal: prompt, wallet_address: address }),
+        body: JSON.stringify({ goal: prompt, wallet_address: address, model: selectedModel }),
         signal: controller.signal,
       });
 
@@ -882,7 +1007,9 @@ export default function ChatPage() {
                   icon: data.icon as string,
                   status: (data.status as "active" | "done" | "error") || "active",
                   summary: data.summary as string | undefined,
-                  durationMs: data.duration_ms as number | undefined,
+                  durationMs: data.durationMs as number | undefined,
+                  input: data.input as Record<string, unknown> | undefined,
+                  inputSummary: data.inputSummary as string | undefined,
                 });
                 break;
               case "tool_call":
@@ -1025,7 +1152,7 @@ export default function ChatPage() {
   }, [messages]);
 
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant" && (m.status === "thinking" || m.status === "streaming"));
-  const showProgress = lastAssistant && lastAssistant.agentSteps && lastAssistant.agentSteps.length > 0;
+  const hasActiveProgress = lastAssistant && lastAssistant.agentSteps && lastAssistant.agentSteps.length > 0;
 
   const handleTransactionConfirm = useCallback(async () => {
     if (!pendingTx) return;
@@ -1120,7 +1247,7 @@ export default function ChatPage() {
               <div className="flex flex-col gap-5 py-4">
                 {messages.map((message) => (
                   <div key={message.id}>
-                    {showProgress && message.role === "assistant" && message.agentSteps && message.agentSteps.length > 0 && (
+                    {message.role === "assistant" && message.agentSteps && message.agentSteps.length > 0 && (
                       <div className="mb-3">
                         <AgentProgressPanel steps={message.agentSteps} />
                       </div>
@@ -1128,6 +1255,11 @@ export default function ChatPage() {
                     <MessageBubble message={message} onRetry={message.status === "error" ? handleRetry : undefined} />
                   </div>
                 ))}
+                {hasActiveProgress && (
+                  <div className="flex items-center justify-center py-2">
+                    <span className="text-[10px] text-white/15">Processing...</span>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1137,6 +1269,8 @@ export default function ChatPage() {
               value={value}
               disabled={isStreaming}
               isStreaming={isStreaming}
+              selectedModel={selectedModel}
+              onModelChange={setSelectedModel}
               onChange={setValue}
               onSubmit={() => void streamPromptRef.current?.(value)}
               onStop={handleStop}

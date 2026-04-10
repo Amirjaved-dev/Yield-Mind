@@ -20,7 +20,7 @@ import {
 const MAX_TOOL_ROUNDS = 10;
 const MAX_API_RETRIES = 2;
 const ZAI_CHAT_COMPLETIONS_URL = "https://api.z.ai/api/paas/v4/chat/completions";
-const ZAI_MODEL = "glm-5.1";
+const ZAI_MODEL = "glm-4.5-airx";
 
 type ToolCall = {
   id: string;
@@ -141,6 +141,7 @@ function parseToolInput(rawArguments: string): Record<string, unknown> {
 
 async function createChatCompletion(
   messages: ChatMessage[],
+  model: string = ZAI_MODEL,
 ): Promise<ChatMessage> {
   const apiKey = process.env.ZAI_API_KEY;
 
@@ -156,12 +157,12 @@ async function createChatCompletion(
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: ZAI_MODEL,
+        model,
         messages,
         tools,
         tool_choice: "auto",
-        max_tokens: 4096,
-        temperature: 0.3,
+        max_tokens: 2048,
+        temperature: 0.4,
       }),
     });
 
@@ -386,6 +387,62 @@ function getToolResultSummary(toolName: string, resultJson: string): string {
   }
 }
 
+function formatInputSummary(toolName: string, input: Record<string, unknown>): string {
+  const parts: string[] = [];
+  
+  switch (toolName) {
+    case "check_balance":
+    case "check_approval":
+      if (input.chain) parts.push(input.chain as string);
+      if (input.token) parts.push(input.token as string);
+      break;
+    case "discover_opportunities":
+      if (input.chain) parts.push(input.chain as string);
+      if (input.asset) parts.push(input.asset as string);
+      if (input.min_apy) parts.push(`≥${input.min_apy}% APY`);
+      if (input.protocol) parts.push(input.protocol as string);
+      break;
+    case "get_positions":
+      if (input.chain) parts.push(input.chain as string);
+      if (input.protocols) parts.push((input.protocols as string[]).join(", "));
+      break;
+    case "get_quote":
+      if (input.action) parts.push(input.action as string);
+      if (input.amount) parts.push(`${input.amount}`);
+      if (input.asset) parts.push(input.asset as string);
+      break;
+    case "analyze_risk":
+      if (input.time_horizon) parts.push(input.time_horizon as string);
+      break;
+    case "get_token_price":
+      if (input.token) parts.push(input.token as string);
+      if (input.chain) parts.push(`on ${input.chain}`);
+      break;
+    case "get_protocol_info":
+      if (input.protocol) parts.push(input.protocol as string);
+      break;
+    case "get_gas_estimate":
+      if (input.chain) parts.push(input.chain as string);
+      if (input.action) parts.push(input.action as string);
+      break;
+    case "prepare_deposit":
+    case "execute_deposit":
+      if (input.chain) parts.push(input.chain as string);
+      if (input.protocol) parts.push(input.protocol as string);
+      if (input.amount && input.asset) parts.push(`${input.amount} ${input.asset}`);
+      break;
+    case "prepare_withdraw":
+    case "execute_withdraw":
+      if (input.position_id) parts.push(input.position_id as string);
+      if (input.amount) parts.push(`${input.amount}`);
+      break;
+    default:
+      break;
+  }
+  
+  return parts.slice(0, 4).join(" • ");
+}
+
 const SSE_HEADERS: Record<string, string> = {
   "Content-Type": "text/event-stream",
   "Cache-Control": "no-cache, no-transform",
@@ -448,13 +505,15 @@ export async function POST(req: NextRequest) {
     return createErrorStream("Invalid request body.");
   }
 
-  const { goal, wallet_address } = body;
+  const { goal, wallet_address, model } = body;
 
   if (!goal || !wallet_address) {
     return createErrorStream(
       "Missing required fields: goal and wallet_address",
     );
   }
+
+  const selectedModel = model || ZAI_MODEL;
 
   if (isCasualGreeting(goal)) {
     return createGreetingStream(
@@ -494,19 +553,22 @@ export async function POST(req: NextRequest) {
         let finalMessage: string | null = null;
         let stepIndex = 0;
 
-        send("step", { index: stepIndex++, label: "Understanding your request", icon: "brain" });
+        send("step", { index: stepIndex, label: "Understanding your request", icon: "brain", status: "active" });
+        await new Promise((r) => setTimeout(r, 300));
+        send("step", { index: stepIndex, label: "Understanding your request", icon: "brain", status: "done" });
+        stepIndex++;
 
         while (round < MAX_TOOL_ROUNDS) {
           round++;
 
-          send("thinking", { message: round > 1 ? "Analyzing tool results..." : "Thinking about the best approach..." });
+          send("thinking", { message: round > 1 ? "Analyzing results..." : "Planning approach..." });
 
-          const assistantMessage = await createChatCompletion(messages);
+          const assistantMessage = await createChatCompletion(messages, selectedModel);
           const toolCalls = assistantMessage.tool_calls ?? [];
 
           if (toolCalls.length === 0) {
             finalMessage = assistantMessage.content;
-            send("step", { index: stepIndex++, label: "Generating recommendation", icon: "sparkles", status: "active" });
+            send("step", { index: stepIndex++, label: "Generating response", icon: "sparkles", status: "active" });
             break;
           }
 
@@ -520,18 +582,22 @@ export async function POST(req: NextRequest) {
             const toolName = toolCall.function.name;
             const label = TOOL_LABELS[toolName] || `Calling ${toolName}`;
             const icon = TOOL_ICONS[toolName] || "wrench";
+            const toolInput = parseToolInput(toolCall.function.arguments);
+            const inputSummary = formatInputSummary(toolName, toolInput);
 
-            send("step", { index: stepIndex, label, icon, status: "active" });
+            send("step", { index: stepIndex, label, icon, status: "active", input: toolInput, inputSummary });
             send("tool_call", {
               tool: toolName,
               label: `${label}...`,
               icon,
+              input: toolInput,
+              inputSummary,
             });
 
             const startTime = Date.now();
             const result = await executeTool(
               toolName,
-              parseToolInput(toolCall.function.arguments),
+              toolInput,
             );
             const duration = Date.now() - startTime;
 
@@ -542,8 +608,9 @@ export async function POST(req: NextRequest) {
               icon,
               summary,
               duration_ms: duration,
+              success: true,
             });
-            send("step", { index: stepIndex, label, icon, status: "done", summary });
+            send("step", { index: stepIndex, label, icon, status: "done", summary, durationMs: duration, input: toolInput, inputSummary });
 
             messages.push({
               role: "tool",
@@ -553,6 +620,10 @@ export async function POST(req: NextRequest) {
 
             stepIndex++;
           }
+          
+          if (round < MAX_TOOL_ROUNDS && toolCalls.length > 0) {
+            send("thinking", { message: "Deciding next action..." });
+          }
         }
 
         const recommendation =
@@ -560,6 +631,7 @@ export async function POST(req: NextRequest) {
           "Unable to generate a recommendation. Please try again.";
 
         send("clear");
+        send("step", { index: stepIndex - 1, label: "Generating response", icon: "sparkles", status: "done" });
 
         const chunks = recommendation.split(/(\s+)/);
         for (const chunk of chunks) {

@@ -14,6 +14,8 @@ export type StoredChatMessage = {
     status: string;
     summary?: string;
     durationMs?: number;
+    input?: Record<string, unknown>;
+    inputSummary?: string;
   }>;
 };
 

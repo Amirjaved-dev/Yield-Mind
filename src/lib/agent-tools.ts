@@ -4,21 +4,23 @@ export const tools = [
     function: {
       name: "check_balance",
       description:
-        "Check the user's token balance on a specific chain. Use this before suggesting deposits to verify the user has sufficient funds. Returns balance in both raw and formatted amounts, plus USD value.",
+        "MANDATORY FIRST STEP before any deposit. Checks user's token balance on a specific chain. Returns exact balance, USD value, and whether sufficient for planned transaction. Always call this before suggesting or preparing deposits.",
       parameters: {
         type: "object",
         properties: {
           chain: {
             type: "string",
-            description: "Blockchain network (e.g., ethereum, arbitrum, base)",
+            description:
+              "Blockchain network: ethereum, arbitrum, optimism, base, polygon, avalanche, bnb, solana",
           },
           token: {
             type: "string",
-            description: "Token symbol (e.g., USDC, ETH, WETH)",
+            description:
+              "Token symbol (USDC, USDT, ETH, WETH, WBTC, etc.) or contract address",
           },
           wallet_address: {
             type: "string",
-            description: "User's wallet address",
+            description: "User's wallet address (0x...)",
           },
         },
         required: ["chain", "token", "wallet_address"],
@@ -30,17 +32,17 @@ export const tools = [
     function: {
       name: "check_approval",
       description:
-        "Check if a token is approved for spending by a protocol. Returns the current allowance and whether approval is needed before depositing.",
+        "Checks if token is approved for spending by a protocol. Call before prepare_deposit to determine if approval transaction is needed. Returns current allowance and approval requirement status.",
       parameters: {
         type: "object",
         properties: {
           chain: {
             type: "string",
-            description: "Blockchain network (e.g., ethereum, arbitrum)",
+            description: "Blockchain network",
           },
           token: {
             type: "string",
-            description: "Token symbol (e.g., USDC, USDT)",
+            description: "Token symbol to check approval for",
           },
           wallet_address: {
             type: "string",
@@ -48,7 +50,8 @@ export const tools = [
           },
           spender: {
             type: "string",
-            description: "The protocol address that needs approval (e.g., Aave pool address)",
+            description:
+              "Protocol contract address that needs approval (e.g., Aave pool, Compound comptroller)",
           },
         },
         required: ["chain", "token", "wallet_address", "spender"],
@@ -60,82 +63,45 @@ export const tools = [
     function: {
       name: "discover_opportunities",
       description:
-        "Discover yield opportunities across DeFi protocols. Returns a list of available pools, APYs, TVL, and risk metrics for various lending and liquidity protocols.",
+        "CORE DISCOVERY TOOL. Scans DeFi protocols to find yield opportunities. Use for any yield discovery, comparison, or optimization request. Returns pools with APY, TVL, risk metrics, and protocol details. Supports filtering by chain, asset, protocol, risk level, and sorting options.",
       parameters: {
         type: "object",
         properties: {
           chain: {
             type: "string",
             description:
-              "Filter by blockchain network (e.g., ethereum, arbitrum, optimism, base, polygon, avalanche, bnb)",
+              "Filter by blockchain: ethereum, arbitrum, optimism, base, polygon, avalanche, bnb, solana. Omit for cross-chain scan.",
           },
-          min_apy: {
-            type: "number",
-            description: "Minimum APY threshold to filter results",
-          },
-          max_risk: {
+          asset: {
             type: "string",
-            enum: ["low", "medium", "high"],
-            description: "Maximum risk level to include in results",
+            description:
+              "Filter by asset symbol (USDC, ETH, WETH, WBTC, stETH, etc.)",
           },
           protocol: {
             type: "string",
             description:
-              "Filter by specific protocol (e.g., aave, compound, uniswap, lido)",
+              "Filter by protocol: aave, compound, uniswap, curve, lido, rocket-pool, gmx, yearn, convex, aura, euler, morpho",
+          },
+          min_apy: {
+            type: "number",
+            description: "Minimum APY threshold (e.g., 5 for 5% APY)",
+          },
+          max_risk: {
+            type: "string",
+            enum: ["low", "medium", "high"],
+            description: "Maximum acceptable risk level",
           },
           sort_by: {
             type: "string",
             enum: ["apy", "tvl", "risk"],
-            description: "Sort results by APY (highest), TVL (largest), or risk (lowest first)",
-          },
-          asset: {
-            type: "string",
-            description: "Filter by asset symbol (e.g., USDC, ETH, WETH)",
+            description:
+              "Sort results: apy (highest first), tvl (largest first), risk (lowest first)",
           },
           limit: {
             type: "number",
-            description: "Maximum number of results to return (default: 20, max: 50)",
+            description: "Maximum results to return (default: 20, max: 50)",
           },
         },
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "get_quote",
-      description:
-        "Get a quote for depositing or withdrawing assets from a yield pool. Returns expected amounts, gas estimates, slippage, and execution details.",
-      parameters: {
-        type: "object",
-        properties: {
-          action: {
-            type: "string",
-            enum: ["deposit", "withdraw"],
-            description: "Whether to deposit into or withdraw from a pool",
-          },
-          pool_address: {
-            type: "string",
-            description: "The address of the target yield pool",
-          },
-          amount: {
-            type: "string",
-            description: "The amount of the asset to deposit or withdraw",
-          },
-          asset: {
-            type: "string",
-            description: "The token symbol or address (e.g., USDC, ETH, WETH)",
-          },
-          chain: {
-            type: "string",
-            description: "The blockchain network (e.g., ethereum, arbitrum)",
-          },
-          slippage_tolerance: {
-            type: "string",
-            description: "Maximum acceptable slippage (e.g., '0.5' for 0.5%)",
-          },
-        },
-        required: ["action", "pool_address", "amount", "asset"],
       },
     },
   },
@@ -144,23 +110,23 @@ export const tools = [
     function: {
       name: "get_positions",
       description:
-        "Retrieve the user's current yield positions across all protocols. Shows deposited amounts, current value, unrealized PnL, and time-weighted returns for each position.",
+        "RETRIEVES USER'S DEFI POSITIONS. Essential for portfolio analysis, withdrawal planning, and avoiding duplicate positions. Returns all yield positions across protocols with values, APYs, and PnL. Always call before recommending new positions to assess portfolio composition.",
       parameters: {
         type: "object",
         properties: {
           wallet_address: {
             type: "string",
-            description: "The user's wallet address to query positions for",
+            description: "User's wallet address",
+          },
+          chain: {
+            type: "string",
+            description: "Filter by specific chain (optional)",
           },
           protocols: {
             type: "array",
             items: { type: "string" },
-            description: "Filter by specific protocols (e.g., ['aave', 'compound', 'lido'])",
-          },
-          chain: {
-            type: "string",
             description:
-              "Optional filter by chain (e.g., ethereum, arbitrum, base)",
+              "Filter by protocols: ['aave', 'compound', 'lido', 'uniswap', etc.]",
           },
           include_history: {
             type: "boolean",
@@ -174,9 +140,48 @@ export const tools = [
   {
     type: "function",
     function: {
+      name: "get_quote",
+      description:
+        "Gets detailed quote for deposit/withdrawal action. Returns expected amounts, slippage, price impact, and execution details. Use when user specifies exact amounts for precise planning.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: ["deposit", "withdraw"],
+            description: "Action type",
+          },
+          amount: {
+            type: "string",
+            description: "Amount to deposit/withdraw in human format (e.g., '1000')",
+          },
+          asset: {
+            type: "string",
+            description: "Token symbol or address",
+          },
+          pool_address: {
+            type: "string",
+            description: "Target pool contract address",
+          },
+          chain: {
+            type: "string",
+            description: "Blockchain network",
+          },
+          slippage_tolerance: {
+            type: "string",
+            description: "Max slippage as decimal (e.g., '0.005' for 0.5%)",
+          },
+        },
+        required: ["action", "pool_address", "amount", "asset"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "analyze_risk",
       description:
-        "Analyze the risk profile of a yield position or portfolio. Evaluates smart contract risk, impermanent loss, liquidation risk, protocol concentration, and overall portfolio health score.",
+        "CRITICAL RISK ASSESSMENT. Analyzes risk profile of positions or portfolio. Evaluates: smart contract risk, protocol concentration, oracle dependency, liquidation risk, impermanent loss exposure. Returns risk score (0-100) with detailed breakdown. Always use before recommending new positions.",
       parameters: {
         type: "object",
         properties: {
@@ -185,26 +190,21 @@ export const tools = [
             items: {
               type: "object",
               properties: {
-                pool_address: { type: "string" },
                 protocol: { type: "string" },
-                amount: { type: "string" },
                 asset: { type: "string" },
+                amount: { type: "string" },
                 chain: { type: "string" },
+                pool_address: { type: "string" },
               },
             },
             description:
-              "Array of positions to analyze. Each position includes pool_address, protocol, amount, asset, and chain.",
-          },
-          wallet_address: {
-            type: "string",
-            description:
-              "Optional wallet address to auto-fetch positions instead of providing them manually",
+              "Positions to analyze. Each position: { protocol, asset, amount, chain, pool_address? }",
           },
           time_horizon: {
             type: "string",
             enum: ["short", "medium", "long"],
             description:
-              "Investment time horizon which affects risk scoring (short < 1 week, medium < 3 months, long > 3 months)",
+              "Investment horizon: short (<1 week), medium (<3 months), long (>3 months)",
           },
           include_oracle_risk: {
             type: "boolean",
@@ -223,17 +223,18 @@ export const tools = [
     function: {
       name: "get_token_price",
       description:
-        "Get the current price of a token in USD. Supports major tokens and chain-specific tokens.",
+        "Gets current USD price for any token. Use for: portfolio valuation, calculating transaction values, comparing opportunities. Supports major tokens and chain-specific tokens.",
       parameters: {
         type: "object",
         properties: {
           token: {
             type: "string",
-            description: "Token symbol (e.g., ETH, USDC, WBTC) or address",
+            description: "Token symbol (ETH, USDC, WBTC, stETH, etc.) or address",
           },
           chain: {
             type: "string",
-            description: "Blockchain network (e.g., ethereum, arbitrum). Required if using address.",
+            description:
+              "Blockchain network. Required if using token address instead of symbol.",
           },
         },
         required: ["token"],
@@ -245,21 +246,22 @@ export const tools = [
     function: {
       name: "get_protocol_info",
       description:
-        "Get detailed information about a DeFi protocol including security audits, TVL history, supported chains, and risk assessments.",
+        "DETAILED PROTOCOL INTELLIGENCE. Returns: security audits, TVL history, supported chains, risk assessments, team info, governance details, historical incidents. ESSENTIAL before recommending any protocol. Use to assess protocol safety and reliability.",
       parameters: {
         type: "object",
         properties: {
           protocol: {
             type: "string",
-            description: "Protocol name (e.g., aave, compound, lido, uniswap)",
+            description:
+              "Protocol name: aave, compound, uniswap, curve, lido, gmx, yearn, euler, morpho, rocket-pool, etc.",
           },
           include_audits: {
             type: "boolean",
-            description: "Include security audit information",
+            description: "Include detailed security audit information",
           },
           include_tvl_history: {
             type: "boolean",
-            description: "Include TVL history over time",
+            description: "Include TVL history and trends",
           },
         },
         required: ["protocol"],
@@ -271,18 +273,18 @@ export const tools = [
     function: {
       name: "get_gas_estimate",
       description:
-        "Get current gas price estimates for a specific chain and action. Returns gas price in gwei and estimated cost in USD.",
+        "Estimates gas costs for transactions. Use before any deposit/withdrawal to calculate total costs. Returns gas price in gwei and estimated USD cost. Essential for cost-benefit analysis of yield opportunities.",
       parameters: {
         type: "object",
         properties: {
           chain: {
             type: "string",
-            description: "Blockchain network (e.g., ethereum, arbitrum, base)",
+            description: "Blockchain network",
           },
           action: {
             type: "string",
             enum: ["deposit", "withdraw", "approve", "swap", "transfer"],
-            description: "Type of action to estimate gas for",
+            description: "Type of action to estimate",
           },
         },
         required: ["chain"],
@@ -294,25 +296,26 @@ export const tools = [
     function: {
       name: "prepare_deposit",
       description:
-        "Prepare a deposit transaction for execution. Returns transaction data including the encoded calldata, gas estimates, and whether approval is needed. Use this to show the user a preview before they confirm.",
+        "PREPARES DEPOSIT TRANSACTION. Returns transaction preview with: estimated APY, gas costs, approval requirements, and transaction data. MUST call this before execute_deposit. Shows user exactly what will happen. STOP after this and await user confirmation.",
       parameters: {
         type: "object",
         properties: {
           protocol: {
             type: "string",
-            description: "Target protocol (e.g., aave, aave-v3, compound, compound-v3)",
+            description:
+              "Target protocol: aave, aave-v3, compound, compound-v3, euler, morpho, yearn",
           },
           asset: {
             type: "string",
-            description: "Asset to deposit (e.g., USDC, USDT, WETH)",
+            description: "Asset to deposit: USDC, USDT, ETH, WETH, WBTC, stETH",
           },
           amount: {
             type: "string",
-            description: "Amount to deposit in human-readable format (e.g., '1000' for 1000 USDC)",
+            description: "Amount to deposit in human format (e.g., '1000' for 1000 USDC)",
           },
           chain: {
             type: "string",
-            description: "Blockchain network (e.g., ethereum, arbitrum, base)",
+            description: "Blockchain network",
           },
           wallet_address: {
             type: "string",
@@ -328,17 +331,19 @@ export const tools = [
     function: {
       name: "prepare_withdraw",
       description:
-        "Prepare a withdrawal transaction for execution. Returns transaction data including the encoded calldata and gas estimates. Use this to show the user a preview before they confirm.",
+        "PREPARES WITHDRAWAL TRANSACTION. Returns withdrawal preview with amounts, gas costs, and transaction data. MUST call before execute_withdraw. Shows user exactly what will be withdrawn. STOP after this and await user confirmation.",
       parameters: {
         type: "object",
         properties: {
           position_id: {
             type: "string",
-            description: "Identifier for the position to withdraw from (e.g., 'aave-v3-arbitrum-usdc')",
+            description:
+              "Position identifier (format: 'protocol-chain-asset', e.g., 'aave-v3-arbitrum-usdc')",
           },
           amount: {
             type: "string",
-            description: "Amount to withdraw (e.g., '500'). Use 'max' for full withdrawal.",
+            description:
+              "Amount to withdraw in human format. Use 'max' for full withdrawal.",
           },
           wallet_address: {
             type: "string",
@@ -354,36 +359,44 @@ export const tools = [
     function: {
       name: "execute_deposit",
       description:
-        "Execute a deposit transaction into a yield pool. IMPORTANT: Only call this after the user has seen the preview and explicitly confirmed. Returns transaction data for wallet signing.",
+        "EXECUTES DEPOSIT TRANSACTION. ONLY call after: 1) check_balance verified funds, 2) prepare_deposit shown preview, 3) user explicitly confirmed. Returns transaction data for wallet signing. user_confirmation MUST be true.",
       parameters: {
         type: "object",
         properties: {
           protocol: {
             type: "string",
-            description: "Target protocol (e.g., aave-v3, compound-v3)",
+            description: "Target protocol",
           },
           asset: {
             type: "string",
-            description: "Asset to deposit (e.g., USDC, ETH)",
+            description: "Asset to deposit",
           },
           amount: {
             type: "string",
-            description: "Amount to deposit in human-readable format (e.g., '1000' for 1000 USDC)",
+            description: "Amount to deposit",
           },
           chain: {
             type: "string",
-            description: "Blockchain network (e.g., ethereum, arbitrum)",
+            description: "Blockchain network",
           },
           wallet_address: {
             type: "string",
-            description: "User's wallet address for transaction preparation",
+            description: "User's wallet address",
           },
           user_confirmation: {
             type: "boolean",
-            description: "Must be true - indicates user has confirmed this exact transaction",
+            description:
+              "MUST be true. Indicates user has seen preview and explicitly confirmed this exact transaction.",
           },
         },
-        required: ["protocol", "asset", "amount", "chain", "wallet_address", "user_confirmation"],
+        required: [
+          "protocol",
+          "asset",
+          "amount",
+          "chain",
+          "wallet_address",
+          "user_confirmation",
+        ],
       },
     },
   },
@@ -392,17 +405,17 @@ export const tools = [
     function: {
       name: "execute_withdraw",
       description:
-        "Execute a withdrawal from a yield position. IMPORTANT: Only call this after the user has seen the preview and explicitly confirmed. Returns transaction data for wallet signing.",
+        "EXECUTES WITHDRAWAL TRANSACTION. ONLY call after: 1) prepare_withdraw shown preview, 2) user explicitly confirmed. Returns transaction data for wallet signing. user_confirmation MUST be true.",
       parameters: {
         type: "object",
         properties: {
           position_id: {
             type: "string",
-            description: "Identifier for the position to withdraw from (protocol-chain-asset)",
+            description: "Position identifier to withdraw from",
           },
           amount: {
             type: "string",
-            description: "Amount to withdraw (e.g., '500' for 500 USDC). Use 'max' for full withdrawal.",
+            description: "Amount to withdraw. Use 'max' for full withdrawal.",
           },
           wallet_address: {
             type: "string",
@@ -410,7 +423,8 @@ export const tools = [
           },
           user_confirmation: {
             type: "boolean",
-            description: "Must be true - indicates user has confirmed this exact withdrawal",
+            description:
+              "MUST be true. Indicates user has seen preview and explicitly confirmed.",
           },
         },
         required: ["position_id", "amount", "wallet_address", "user_confirmation"],
