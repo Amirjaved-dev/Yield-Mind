@@ -3,6 +3,7 @@ import { tools } from "@/lib/agent-tools";
 import { SYSTEM_PROMPT } from "@/lib/prompts/system-prompt";
 import {
   discoverOpportunities,
+  discoverLifiOpportunities,
   getPositions,
   getQuote,
   analyzeRisk,
@@ -233,15 +234,25 @@ async function executeTool(
     }
 
     case "discover_opportunities": {
-      const result = await discoverOpportunities(
-        input.chain as string | undefined,
-        input.min_apy as number | undefined,
-        input.max_risk as string | undefined,
-        input.protocol as string | undefined,
-        input.sort_by as string | undefined,
-        input.asset as string | undefined,
-        input.limit as number | undefined,
-      );
+      let result;
+      try {
+        result = await discoverLifiOpportunities(
+          input.chain as string | undefined,
+          input.min_apy as number | undefined,
+          input.asset as string | undefined,
+          input.limit as number | undefined,
+        );
+      } catch {
+        result = await discoverOpportunities(
+          input.chain as string | undefined,
+          input.min_apy as number | undefined,
+          input.max_risk as string | undefined,
+          input.protocol as string | undefined,
+          input.sort_by as string | undefined,
+          input.asset as string | undefined,
+          input.limit as number | undefined,
+        );
+      }
       return JSON.stringify(result);
     }
 
@@ -310,6 +321,7 @@ async function executeTool(
         input.amount as string,
         input.chain as string,
         input.wallet_address as string,
+        input.opportunity_id as string | undefined,
       );
       return JSON.stringify(result);
     }
@@ -331,6 +343,7 @@ async function executeTool(
         input.chain as string,
         input.user_confirmation as boolean,
         input.wallet_address as string,
+        input.opportunity_id as string | undefined,
       );
       return JSON.stringify(result);
     }

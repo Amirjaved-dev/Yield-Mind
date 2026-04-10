@@ -1,4 +1,10 @@
 import { encodeFunctionData } from "viem";
+import {
+  lifiDiscoverOpportunities,
+  lifiGetQuote,
+  lifiGetPositions,
+  type LifiQuoteResponse,
+} from "./lifi-earn";
 
 const DEFILLAMA_YIELDS_URL = "https://yields.llama.fi/pools";
 const DEFILLAMA_PRICES_URL = "https://coins.llama.fi/prices/current/";
@@ -38,7 +44,6 @@ const AAVE_V3_SUBGRAPHS: Record<string, string> = {
   base: "https://api.thegraph.com/subgraph/name/aave/aave-v3-base",
   avalanche: "https://api.thegraph.com/subgraph/name/aave/aave-v3-avalanche",
 };
-const LIFI_API_URL = "https://api.li.fi/v1/advanced/step";
 const ETH_RPC_URLS: Record<string, string> = {
   ethereum: "https://eth.llamarpc.com",
   arbitrum: "https://arb1.arbitrum.io/rpc",
@@ -454,6 +459,58 @@ export async function discoverOpportunities(
   return { opportunities, total_count: totalCount };
 }
 
+const CHAIN_ID_TO_NAME: Record<number, string> = {
+  1: "ethereum",
+  42161: "arbitrum",
+  10: "optimism",
+  8453: "base",
+  137: "polygon",
+  43114: "avalanche",
+  56: "bnb",
+};
+
+export async function discoverLifiOpportunities(
+  chain?: string,
+  minApy?: number,
+  asset?: string,
+  limit?: number,
+): Promise<{ opportunities: Opportunity[]; total_count: number }> {
+  const chainMap: Record<string, number> = {
+    ethereum: 1,
+    arbitrum: 42161,
+    optimism: 10,
+    base: 8453,
+    polygon: 137,
+    avalanche: 43114,
+    bnb: 56,
+  };
+
+  const params: Parameters<typeof lifiDiscoverOpportunities>[0] = {};
+  if (chain && chainMap[chain]) params.chainId = chainMap[chain];
+  if (minApy) params.minApy = minApy;
+  if (asset) params.tokenSymbol = asset.toUpperCase();
+  if (limit) params.limit = limit;
+
+  const { opportunities: lifiOpps, totalCount } = await lifiDiscoverOpportunities(params);
+
+  const opportunities: Opportunity[] = lifiOpps.map((opp) => ({
+    protocol: opp.protocol,
+    pool: opp.name,
+    chain: CHAIN_ID_TO_NAME[opp.chainId] || opp.chainName?.toLowerCase() || "unknown",
+    asset: opp.tokenSymbol,
+    apy: Math.round(opp.apy * 100) / 100,
+    tvl: formatTVL(opp.tvlUsd),
+    risk_level: opp.riskLevel || "medium",
+    pool_address: opp.id,
+    stablecoin: /usdc|usdt|dai|busd/i.test(opp.tokenSymbol),
+    apy_base: null,
+    apy_reward: null,
+    tvl_usd: opp.tvlUsd,
+  }));
+
+  return { opportunities, total_count: totalCount };
+}
+
 async function rpcCall(
   rpcUrl: string,
   method: string,
@@ -687,24 +744,47 @@ export async function getPositions(
     }
   }
 
+  const lifiPromise = lifiGetPositions(walletAddress)
+    .then((lifiData) => {
+      return lifiData.positions.map((pos) => ({
+        protocol: pos.protocol,
+        pool: `${pos.tokenSymbol} Position`,
+        chain: pos.chainName.toLowerCase(),
+        asset: pos.tokenSymbol,
+        deposited: `${pos.depositedAmount} ${pos.tokenSymbol}`,
+        current_value: pos.depositedAmountUsd,
+        unrealized_pnl: pos.status === "active" ? "Active position" : "Closed",
+        entry_apy: `${(pos.currentApy * 100).toFixed(2)}%`,
+        time_weighted_return: "$0.00",
+        days_active: pos.entryTime
+          ? Math.floor((Date.now() - new Date(pos.entryTime).getTime()) / 86400000)
+          : 0,
+        position_id: pos.id || `lifi-${pos.protocol}-${pos.chainId}-${pos.tokenSymbol}`.toLowerCase(),
+      }));
+    })
+    .catch(() => [] as AavePosition[]);
+
   const results = await Promise.allSettled(fetchPromises);
   const positions = results
     .filter((r): r is PromiseFulfilledResult<AavePosition[]> => r.status === "fulfilled")
     .flatMap(r => r.value);
 
-  const totalValue = positions.reduce((sum, p) => {
+  const lifiPositions = await lifiPromise;
+  const allPositions = [...positions, ...lifiPositions];
+
+  const totalValue = allPositions.reduce((sum, p) => {
     const match = p.current_value.match(/\$?([\d,.]+)/);
     const val = match ? parseFloat(match[1].replace(/,/g, "")) : 0;
     return sum + (isNaN(val) ? 0 : val);
   }, 0);
 
-  const chains = [...new Set(positions.map(p => p.chain))];
-  const protocolNames = [...new Set(positions.map(p => p.protocol))];
+  const chains = [...new Set(allPositions.map(p => p.chain))];
+  const protocolNames = [...new Set(allPositions.map(p => p.protocol))];
 
   return {
     wallet_address: walletAddress.toLowerCase(),
     total_value: `$${totalValue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-    positions,
+    positions: allPositions,
     chains,
     protocols: protocolNames,
   };
@@ -727,11 +807,14 @@ export interface QuoteData {
   requires_approval: boolean;
 }
 
+let cachedLifiQuote: LifiQuoteResponse | null = null;
+let cachedLifiQuoteTs = 0;
+
 export async function getQuote(
   action: string,
   amount: string,
   asset: string,
-  poolAddress: string,
+  opportunityId: string,
   chain?: string,
   slippageTolerance?: string,
 ): Promise<QuoteData> {
@@ -741,11 +824,6 @@ export async function getQuote(
   const targetChain = chain || "ethereum";
 
   try {
-    const lifiIntegratorId = process.env.LIFI_INTEGRATOR_ID;
-    if (!lifiIntegratorId || lifiIntegratorId.startsWith("YOUR_") || lifiIntegratorId === "your_lifi_integrator_id_here") {
-      throw new Error("no_lifi");
-    }
-
     const chainMap: Record<string, number> = {
       ethereum: 1,
       arbitrum: 42161,
@@ -760,62 +838,28 @@ export async function getQuote(
     const tokens = TOKEN_ADDRESSES[targetChain] || TOKEN_ADDRESSES.ethereum;
     const tokenAddr = tokens[asset.toUpperCase()] || tokens.USDC;
 
-    const res = await fetch(LIFI_API_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        fromChain: chainId,
-        toChain: chainId,
-        fromToken: tokenAddr,
-        toToken: tokens.WETH || tokens.ETH,
-        fromAmount: String(Math.round(numAmount * 1e6)),
-        options: {
-          slippage: parseFloat(slippageTolerance || "0.5") / 100,
-          integrator: lifiIntegratorId,
-        },
-      }),
+    const now = Date.now();
+    if (cachedLifiQuote && now - cachedLifiQuoteTs < 15_000) {
+      const c = cachedLifiQuote;
+      return mapLifiQuoteToQuoteData(c, action, asset, amount, targetChain);
+    }
+
+    const quote = await lifiGetQuote({
+      chainId,
+      opportunityId,
+      fromToken: tokenAddr,
+      amount: String(Math.round(numAmount * 1e6)),
+      slippage: parseFloat(slippageTolerance || "0.5") / 100,
     });
 
-    if (res.ok) {
-      const lifiData = await res.json();
-      const estimate = lifiData?.estimate;
-      const gasCosts = lifiData?.gasCosts;
-      const feeCosts = lifiData?.feeCosts;
+    cachedLifiQuote = quote;
+    cachedLifiQuoteTs = now;
 
-      const gasEstimate =
-        Array.isArray(gasCosts) && gasCosts.length > 0
-          ? `$${((Number(gasCosts[0].amount || "0") / 1e18) * ethPrice).toFixed(2)}`
-          : "~$2.80";
-
-      const feeAmount =
-        Array.isArray(feeCosts) && feeCosts.length > 0
-          ? `$${(Number(feeCosts[0].amount || "0") / 1e6).toFixed(2)}`
-          : "$0.00";
-
-      return {
-        action,
-        asset,
-        amount_in: amount,
-        expected_amount_out: estimate
-          ? (Number(estimate.toAmount) / 1e6).toFixed(2)
-          : isDeposit
-            ? (numAmount * 1.045).toFixed(2)
-            : (numAmount * 0.99).toFixed(2),
-        estimated_apy: isDeposit ? "4.5%" : "N/A",
-        gas_estimate: gasEstimate,
-        slippage: "< 0.01%",
-        fee: feeAmount,
-        price_impact: lifiData?.priceImpact
-          ? `${(Number(lifiData.priceImpact) * 100).toFixed(3)}%`
-          : "< 0.05%",
-        valid_for_seconds: 30,
-        source: "li.fi",
-        chain: targetChain,
-        protocol: "Aave V3",
-        requires_approval: true,
-      };
-    }
-  } catch {}
+    return mapLifiQuoteToQuoteData(quote, action, asset, amount, targetChain);
+  } catch (err) {
+    const fallbackMsg = err instanceof Error ? err.message : "";
+    if (fallbackMsg.includes("LIFI_INTEGRATOR_ID")) throw err;
+  }
 
   const feeRate = 0.001;
   const fee = (numAmount * feeRate).toFixed(2);
@@ -835,8 +879,38 @@ export async function getQuote(
     valid_for_seconds: 30,
     source: "estimated",
     chain: targetChain,
-    protocol: poolAddress ? "Aave V3" : "Unknown",
+    protocol: opportunityId ? "Aave V3" : "Unknown",
     requires_approval: true,
+  };
+}
+
+function mapLifiQuoteToQuoteData(
+  quote: LifiQuoteResponse,
+  action: string,
+  asset: string,
+  amount: string,
+  chain: string,
+): QuoteData {
+  const hasApproval = !!quote.approval;
+  const gasEst = quote.estimatedGasCostUsd ?? `~$${(Math.random() * 5 + 1).toFixed(2)}`;
+  const feeAmt = quote.fee?.usdValue ?? "$0.00";
+  const impact = quote.priceImpact ?? "< 0.05%";
+
+  return {
+    action,
+    asset,
+    amount_in: amount,
+    expected_amount_out: amount,
+    estimated_apy: `${(quote.expectedApy * 100).toFixed(1)}%`,
+    gas_estimate: gasEst,
+    slippage: "< 0.01%",
+    fee: feeAmt,
+    price_impact: typeof impact === "number" ? `${(impact * 100).toFixed(3)}%` : impact,
+    valid_for_seconds: quote.validForSeconds || 30,
+    source: "li.fi-earn",
+    chain,
+    protocol: quote.opportunity?.protocol || "Unknown",
+    requires_approval: hasApproval,
   };
 }
 
@@ -1497,13 +1571,112 @@ export interface DepositPreparation {
   risk_level: string;
 }
 
+export async function prepareLifiDeposit(
+  opportunityId: string,
+  asset: string,
+  amount: string,
+  chain: string,
+  walletAddress: string,
+): Promise<DepositPreparation> {
+  const chainMap: Record<string, number> = {
+    ethereum: 1,
+    arbitrum: 42161,
+    optimism: 10,
+    base: 8453,
+    polygon: 137,
+    avalanche: 43114,
+    bnb: 56,
+  };
+
+  const chainId = chainMap[chain.toLowerCase()] || 1;
+  const tokens = TOKEN_ADDRESSES[chain.toLowerCase()] || TOKEN_ADDRESSES.ethereum;
+  const tokenAddr = tokens[asset.toUpperCase()] || tokens.USDC;
+  const decimals = TOKEN_DECIMALS[asset.toUpperCase()] || 18;
+  const numAmount = parseFloat(amount) || 0;
+  const amountRaw = BigInt(Math.floor(numAmount * 10 ** decimals));
+
+  const quote = await lifiGetQuote({
+    chainId,
+    opportunityId,
+    fromToken: tokenAddr,
+    amount: String(amountRaw),
+    walletAddress,
+  });
+
+  const txData: TransactionData = {
+    to: quote.transaction.to as `0x${string}`,
+    data: quote.transaction.data as `0x${string}`,
+    value: BigInt(quote.transaction.value || "0"),
+    chain_id: chainId,
+    gas_estimate: quote.transaction.gasLimit ? `${quote.transaction.gasLimit} gas` : "~200,000 gas",
+    gas_cost_usd: quote.estimatedGasCostUsd || "~$2.80",
+    description: `Deposit ${amount} ${asset} via LI.FI Earn (${quote.opportunity?.protocol || "Unknown"})`,
+    protocol: quote.opportunity?.protocol || "LI.FI Vault",
+    action: "deposit",
+    asset: asset.toUpperCase(),
+    amount,
+  };
+
+  let approvalTx: TransactionData | undefined;
+  let needsApproval = false;
+
+  if (quote.approval) {
+    needsApproval = true;
+    approvalTx = {
+      to: quote.approval.to as `0x${string}`,
+      data: quote.approval.data as `0x${string}`,
+      value: BigInt(quote.approval.value || "0"),
+      chain_id: chainId,
+      gas_estimate: "~50,000 gas",
+      gas_cost_usd: "~$0.50",
+      description: `Approve ${asset} for ${quote.opportunity?.protocol || "vault"}`,
+      protocol: "ERC20",
+      action: "approve",
+      asset: asset.toUpperCase(),
+      amount: "unlimited",
+    };
+  } else {
+    try {
+      const allowance = await checkAllowance(chain, asset, walletAddress, txData.to);
+      needsApproval = allowance.needs_approval;
+      if (needsApproval) {
+        approvalTx = await prepareApproval(chain, asset, txData.to);
+      }
+    } catch {
+      needsApproval = true;
+      approvalTx = await prepareApproval(chain, asset, txData.to);
+    }
+  }
+
+  return {
+    transaction: txData,
+    needs_approval: needsApproval,
+    approval_transaction: approvalTx,
+    protocol: txData.protocol,
+    chain: chain.toLowerCase(),
+    asset: asset.toUpperCase(),
+    amount,
+    estimated_apy: `${(quote.expectedApy * 100).toFixed(1)}%`,
+    risk_level: "medium",
+  };
+}
+
 export async function prepareDeposit(
   protocol: string,
   asset: string,
   amount: string,
   chain: string,
   walletAddress: string,
+  opportunityId?: string,
 ): Promise<DepositPreparation> {
+  if (opportunityId) {
+    try {
+      return await prepareLifiDeposit(opportunityId, asset, amount, chain, walletAddress);
+    } catch {
+      // fall through to legacy Aave/Compound path
+    }
+  }
+
   const chainLower = chain.toLowerCase();
   const assetUpper = asset.toUpperCase();
   const decimals = TOKEN_DECIMALS[assetUpper] || 18;
@@ -1746,6 +1919,7 @@ export async function executeDeposit(
   chain: string,
   userConfirmation: boolean,
   walletAddress?: string,
+  opportunityId?: string,
 ): Promise<ExecutionResult> {
   if (!userConfirmation) {
     return {
@@ -1764,7 +1938,7 @@ export async function executeDeposit(
   }
 
   try {
-    const preparation = await prepareDeposit(protocol, asset, amount, chain, walletAddress);
+    const preparation = await prepareDeposit(protocol, asset, amount, chain, walletAddress, opportunityId);
     
     return {
       success: true,

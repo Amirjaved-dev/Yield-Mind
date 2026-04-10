@@ -38,6 +38,7 @@ import {
   type StoredChatMessage,
 } from "@/hooks/use-chat-storage";
 import { TransactionModal } from "@/components/TransactionModal";
+import { VaultList } from "@/components/VaultList";
 import { 
   useTransactionFlow, 
   type DepositPreparation, 
@@ -437,9 +438,11 @@ function MessageBubble({
 }
 
 function EmptyState({ onSuggestion }: { onSuggestion: (s: string) => void }) {
+  const [showVaults, setShowVaults] = useState(false);
+
   return (
-    <div className="flex flex-1 items-center justify-center">
-      <div className="max-w-lg text-center">
+    <div className="flex flex-1 items-start justify-center pt-10">
+      <div className="max-w-lg text-center w-full">
         <div className="mx-auto mb-8 flex h-16 w-16 items-center justify-center rounded-2xl border border-[#88fff7]/10 bg-[#88fff7]/[0.04]">
           <Sparkles size={28} className="text-[#88fff7]/50" />
         </div>
@@ -462,6 +465,24 @@ function EmptyState({ onSuggestion }: { onSuggestion: (s: string) => void }) {
               <ChevronRight size={14} className="text-white/10 group-hover:text-white/30 transition-colors" />
             </button>
           ))}
+        </div>
+
+        <div className="mt-8">
+          <button
+            onClick={() => setShowVaults((v) => !v)}
+            className="group flex w-full items-center justify-between rounded-xl border border-[#88fff7]/10 bg-[#88fff7]/[0.03] px-4 py-3 text-sm text-[#88fff7]/60 transition-all hover:border-[#88fff7]/20 hover:bg-[#88fff7]/[0.06] hover:text-[#88fff7]/80"
+          >
+            <span className="flex items-center gap-2">
+              <TrendingUp size={16} />
+              Browse LI.FI Earn Vaults
+            </span>
+            {showVaults ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </button>
+          {showVaults && (
+            <div className="mt-3 rounded-xl border border-white/[0.04] bg-white/[0.01] p-4">
+              <VaultList />
+            </div>
+          )}
         </div>
       </div>
     </div>

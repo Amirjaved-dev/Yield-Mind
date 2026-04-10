@@ -303,7 +303,7 @@ export const tools = [
           protocol: {
             type: "string",
             description:
-              "Target protocol: aave, aave-v3, compound, compound-v3, euler, morpho, yearn",
+              "Target protocol: aave, aave-v3, compound, compound-v3, euler, morpho, yearn, or any LI.FI vault name",
           },
           asset: {
             type: "string",
@@ -319,7 +319,11 @@ export const tools = [
           },
           wallet_address: {
             type: "string",
-            description: "User's wallet address",
+            description: "User's wallet address (0x...)",
+          },
+          opportunity_id: {
+            type: "string",
+            description: "LI.FI opportunity ID from discover_opportunities — enables LI.FI Earn integration with proper tx data",
           },
         },
         required: ["protocol", "asset", "amount", "chain", "wallet_address"],
@@ -387,6 +391,10 @@ export const tools = [
             type: "boolean",
             description:
               "MUST be true. Indicates user has seen preview and explicitly confirmed this exact transaction.",
+          },
+          opportunity_id: {
+            type: "string",
+            description: "LI.FI opportunity ID — enables LI.FI Earn integration with proper tx data",
           },
         },
         required: [

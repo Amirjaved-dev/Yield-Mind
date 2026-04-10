@@ -20,6 +20,7 @@ export async function GET() {
       {
         headers: {
           Accept: "application/json",
+          "x-lifi-integrator": integratorId,
         },
       },
     );
