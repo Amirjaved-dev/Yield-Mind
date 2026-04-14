@@ -257,7 +257,14 @@ export function useTransactionFlow(): UseTransactionFlowResult {
 
       let hash: `0x${string}`;
 
-      if (protocol.includes("aave")) {
+      if (tx.is_composer) {
+        console.log("[executeDeposit] submitting LI.FI Composer tx", tx.to);
+        hash = await sendTransactionAsync({
+          to: tx.to,
+          data: tx.data,
+          value: txValue,
+        });
+      } else if (protocol.includes("aave")) {
         if (isNative) {
           // Native token → deposit() payable with msg.value = amount
           // viem encodeFunctionData handles selector + ABI encoding correctly
@@ -379,7 +386,30 @@ export function useTransactionFlow(): UseTransactionFlowResult {
 
       let hash: `0x${string}`;
 
-      if (protocol.includes("aave")) {
+      if (tx.is_composer) {
+        const approvalTx = prep.approval_transaction as TransactionData | undefined;
+        const needsApproval = prep.needs_approval as boolean | undefined;
+
+        if (needsApproval && approvalTx) {
+          setState("approving");
+          console.log("[executeWithdraw] submitting vault share approval tx", approvalTx.to);
+          const approvalHash = await sendTransactionAsync({
+            to: approvalTx.to,
+            data: approvalTx.data,
+            value: approvalTx.value,
+          });
+          setApprovalHash(approvalHash);
+          console.log("[executeWithdraw] vault approval tx:", approvalHash);
+          await waitForOnchainReceipt(chainId, approvalHash);
+        }
+
+        console.log("[executeWithdraw] submitting LI.FI Composer tx", tx.to);
+        hash = await sendTransactionAsync({
+          to: tx.to,
+          data: tx.data,
+          value: txValue,
+        });
+      } else if (protocol.includes("aave")) {
         const erc20Addr = await getTokenAddress(chainConfig.name, asset);
         hash = await writeContractAsync({
           address: poolAddress,
@@ -417,9 +447,15 @@ export function useTransactionFlow(): UseTransactionFlowResult {
 
       try {
         await waitForOnchainReceipt(chainId, hash);
+        await waitForComposerCompletion(tx, hash);
       } catch (receiptErr) {
         const msg = receiptErr instanceof Error ? receiptErr.message : String(receiptErr);
-        if (msg.includes("reverted")) {
+        if (
+          msg.includes("reverted") ||
+          msg.includes("Composer") ||
+          msg.includes("LI.FI") ||
+          msg.includes("Timed out")
+        ) {
           throw new Error(msg);
         }
       }
@@ -435,7 +471,7 @@ export function useTransactionFlow(): UseTransactionFlowResult {
       setState("error");
       throw (err instanceof Error ? err : new Error(errorMessage));
     }
-  }, [address, ensureCorrectChain, sendTransactionAsync, writeContractAsync, waitForOnchainReceipt]);
+  }, [address, ensureCorrectChain, sendTransactionAsync, writeContractAsync, waitForComposerCompletion, waitForOnchainReceipt]);
 
   const reset = useCallback(() => {
     setState("idle");

@@ -55,6 +55,7 @@ export function ActionCard({ type, preparation, onConfirm }: ActionCardProps) {
   const risk = RISK_CONFIG[(isDeposit ? prep.risk_level : "medium") as keyof typeof RISK_CONFIG] || RISK_CONFIG.medium;
   const tx = isDeposit ? prep.transaction : withdrawPrep.transaction;
   const chainName = tx?.chain_id ? CHAIN_NAMES[tx.chain_id] : (isDeposit ? prep.chain : withdrawPrep.chain);
+  const isComposer = !!tx?.is_composer;
 
   const handleConfirm = async () => {
     setState("executing");
@@ -171,15 +172,19 @@ export function ActionCard({ type, preparation, onConfirm }: ActionCardProps) {
             <div className="rounded-lg border border-amber-500/15 bg-amber-500/[0.03] p-2.5 flex items-start gap-2">
               <AlertTriangle size={13} className="text-amber-400/70 shrink-0 mt-0.5" />
               <p className="text-[11px] text-amber-300/70">
-                Approval required — you&apos;ll confirm 2 transactions in your wallet (approve + deposit)
+                Approval required — you&apos;ll confirm 2 transactions in your wallet (approve + {isComposer ? "start the Composer route" : "deposit"})
               </p>
             </div>
           )}
 
-          {isDeposit && tx?.is_composer && !prep.needs_approval && (
+          {isComposer && (
             <div className="rounded-lg border border-cyan-500/15 bg-cyan-500/[0.03] p-2.5">
               <p className="text-[11px] text-cyan-200/80">
-                LI.FI Composer bundles the route into one transaction and tracks the destination deposit for you.
+                {isDeposit
+                  ? prep.needs_approval
+                    ? "After approval, LI.FI Composer bundles the swap, bridge, and deposit into one routed transaction."
+                    : "LI.FI Composer bundles the swap, bridge, and deposit into one routed transaction and tracks the destination leg for you."
+                  : "LI.FI Composer bundles the vault exit and any routing steps into one withdrawal transaction."}
               </p>
             </div>
           )}
@@ -212,18 +217,24 @@ export function ActionCard({ type, preparation, onConfirm }: ActionCardProps) {
             ) : isDeposit ? (
               <>
                 <Shield size={13} />
-                {prep.needs_approval ? "Approve & Deposit" : tx?.is_composer ? "Start Composer Route" : "Confirm Deposit"}
+                {isComposer
+                  ? prep.needs_approval
+                    ? "Approve & Start Composer Route"
+                    : "Start Composer Route"
+                  : prep.needs_approval
+                    ? "Approve & Deposit"
+                    : "Confirm Deposit"}
               </>
             ) : (
               <>
                 <Shield size={13} />
-                Confirm Withdrawal
+                {isComposer ? "Start Composer Withdrawal" : "Confirm Withdrawal"}
               </>
             )}
           </button>
 
           <p className="text-[9px] text-white/15 text-center -mb-1">
-            DeFi protocols carry smart contract risk. Only deposit what you can afford to lose.
+            DeFi protocols carry smart contract risk. Only use capital you can afford to put at risk.
           </p>
         </div>
       )}

@@ -5,6 +5,7 @@ import {
   lifiGetPositions,
   isLifiBackendEnabled,
   type LifiQuoteResponse,
+  type LifiPosition,
 } from "./lifi-earn";
 import { cache, CACHE_TTL } from "./cache";
 
@@ -510,6 +511,20 @@ export async function discoverOpportunities(
   const cached = cache.get<{ opportunities: Opportunity[]; total_count: number }>(cacheKey);
   if (cached) return cached;
 
+  const isBaseChain = (chain || "").toLowerCase() === "base";
+
+  if (isBaseChain && isLifiBackendEnabled()) {
+    try {
+      const lifiResults = await discoverLifiOpportunities(chain, minApy, asset, limit);
+      if (lifiResults.opportunities.length > 0) {
+        cache.set(cacheKey, lifiResults);
+        return lifiResults;
+      }
+    } catch (lifiErr) {
+      console.warn("[discoverOpportunities] LI.FI Earn failed, falling back to DeFi Llama:", lifiErr instanceof Error ? lifiErr.message : lifiErr);
+    }
+  }
+
   const res = await fetch(DEFILLAMA_YIELDS_URL, {
     cache: "no-store",
     signal: AbortSignal.timeout(30_000),
@@ -553,13 +568,38 @@ export async function discoverOpportunities(
   }
 
   const SAFE_PROTOCOLS = [
-    "aave", "aave v2", "aave v3", "compound", "compound v3",
-    "morpho", "yearn", "lido", "rocket pool",
+    "aave", "aave v2", "aave v3", "compound", "compound v3", "compound iii",
+    "morpho", "morpho aave", "morpho compound", "yearn", "lido", "rocket pool",
+    "euler", "pendle", "hyperlend", "seamless", "spark", "venus", "moonwell",
+    "angelo finance", "swaev", "yo", "usd0", "nile", "exactum", "flux", "odyssey",
+    "aerodrome", "baseswap", "mkr", "maker", "lybra", "grain", "benqi",
+    "silofinance", "silo", "magpiexyz", "magpie", "bluefin", "tinct",
+    "overnight", "usdm", "sdai", "easylend", "balancer", "convex",
   ];
 
   function isSafeProtocol(proto: string): boolean {
-    const lower = proto.toLowerCase();
-    return SAFE_PROTOCOLS.some(s => lower.includes(s) || s.includes(lower)) || SAFE_PROTOCOLS.includes(lower);
+    if (!proto || proto.length < 2) return false;
+    const lower = proto.toLowerCase().trim();
+    return SAFE_PROTOCOLS.some(s => lower.includes(s) || s.includes(lower));
+  }
+
+  function isLegitimatePool(pool: LlamaPool): boolean {
+    const symbol = (pool.symbol || "").toUpperCase().trim();
+    const proto = (pool.protocol || "").toLowerCase().trim();
+    const apy = pool.apy ?? 0;
+    const tvl = pool.tvlUsd ?? 0;
+
+    const isScamSymbol = /CBTC|RBI|REI|AITV|CBBTC|-|LP$/.test(symbol);
+    const insaneApy = apy > 200;
+    const dustTvl = tvl < 50_000;
+    const emptyProto = !proto || proto.length < 2 || /^(unknown|-|\/)$/i.test(proto);
+
+    if (isScamSymbol) return false;
+    if (insaneApy && tvl < 5_000_000) return false;
+    if (dustTvl) return false;
+    if (emptyProto) return false;
+
+    return true;
   }
 
   function safetyScore(pool: LlamaPool): number {
@@ -590,16 +630,26 @@ export async function discoverOpportunities(
   }
 
   const maxLimit = Math.min(limit || 20, 50);
+
+  pools = pools.filter(isLegitimatePool);
+
   const opportunities: Opportunity[] = pools.slice(0, maxLimit).map((pool: LlamaPool) => {
     const protoLower = (pool.protocol || "").toLowerCase();
     const chainName = pool.chain ? LLAMA_TO_CHAIN[pool.chain] : undefined;
     const isRecommended = isSafeProtocol(protoLower) ||
       ((pool.tvlUsd ?? 0) >= 50_000_000 && (pool.apy ?? 0) <= 30);
+    const underlyingToken = (pool.underlyingTokens || [])[0] || "";
+    const cleanSymbol = (symbol => {
+      const s = symbol.toUpperCase().trim();
+      if (s.includes("-")) return s.split("-")[0].trim();
+      if (/LP$/.test(s)) return s.replace(/LP$/, "").trim();
+      return s;
+    })(pool.symbol || "");
     return {
       protocol: pool.protocol,
-      pool: pool.symbol || pool.name || pool.pool || "Unknown",
+      pool: pool.name || pool.pool || pool.symbol || "Unknown",
       chain: chainName || pool.chain?.toLowerCase() || "unknown",
-      asset: pool.symbol || pool.underlyingTokens?.[0] || "Unknown",
+      asset: cleanSymbol || underlyingToken || "Unknown",
       apy: Math.round((pool.apy ?? 0) * 100) / 100,
       tvl: formatTVL(pool.tvlUsd ?? 0),
       risk_level: assessRiskLevel(pool),
@@ -612,26 +662,7 @@ export async function discoverOpportunities(
     };
   });
 
-  const mergedOpportunities = [...opportunities];
-  if ((chain || "").toLowerCase() === "base" && isLifiBackendEnabled()) {
-    try {
-      const lifiResults = await discoverLifiOpportunities("base", minApy, asset, limit);
-      const seen = new Set(
-        mergedOpportunities.map((o) => `${o.pool_address.toLowerCase()}|${o.protocol.toLowerCase()}`),
-      );
-      for (const opp of lifiResults.opportunities) {
-        const key = `${opp.pool_address.toLowerCase()}|${opp.protocol.toLowerCase()}`;
-        if (!seen.has(key)) {
-          mergedOpportunities.push(opp);
-          seen.add(key);
-        }
-      }
-    } catch (err) {
-      console.warn("[discoverOpportunities] LI.FI merge failed:", err instanceof Error ? err.message : err);
-    }
-  }
-
-  const result = { opportunities: mergedOpportunities, total_count: mergedOpportunities.length };
+  const result = { opportunities, total_count: opportunities.length };
   cache.set(cacheKey, result, CACHE_TTL.OPPORTUNITIES);
   return result;
 }
@@ -764,6 +795,12 @@ interface AavePosition {
   days_active: number;
   position_id: string;
   pool_address?: string;
+  token_decimals?: number;
+}
+
+function extractNumericAmount(value: string): string | null {
+  const match = value.replace(/,/g, "").match(/\d*\.?\d+/);
+  return match?.[0] || null;
 }
 
 async function getAavePositions(
@@ -1055,6 +1092,7 @@ export async function getPositions(
               : 0,
             position_id: pos.id || `lifi-${pos.protocol}-${pos.chainId}-${pos.tokenSymbol}`.toLowerCase(),
             pool_address: pos.opportunityId || "",
+            token_decimals: pos.tokenDecimals,
           }));
         })
         .catch(() => [] as AavePosition[])
@@ -2038,14 +2076,24 @@ export async function prepareLifiDeposit(
     walletAddress,
   });
 
+  let resolvedGasUsd = quote.estimatedGasCostUsd || "";
+  if (!resolvedGasUsd) {
+    try {
+      const gasEst = await getGasEstimate(normalizedSourceChain, "deposit");
+      const ethP = await getEthPrice();
+      const gasCostEth = (gasEst.gas_price_gwei * (quote.transaction.gasLimit ? Number(quote.transaction.gasLimit) : 250000)) / 1e9;
+      resolvedGasUsd = `$${(gasCostEth * ethP).toFixed(2)}`;
+    } catch { resolvedGasUsd = "~$0.50"; }
+  }
+
   const txData: TransactionData = {
     to: quote.transaction.to as `0x${string}`,
     data: quote.transaction.data as `0x${string}`,
     value: BigInt(quote.transaction.value || "0"),
     chain_id: chainId,
     destination_chain_id: destinationChainId,
-    gas_estimate: quote.transaction.gasLimit ? `${quote.transaction.gasLimit} gas` : "~200,000 gas",
-    gas_cost_usd: quote.estimatedGasCostUsd || "~$2.80",
+    gas_estimate: quote.transaction.gasLimit ? `${quote.transaction.gasLimit} gas` : "~250,000 gas",
+    gas_cost_usd: resolvedGasUsd,
     description: `Deposit ${amount} ${asset} via LI.FI Composer into ${quote.opportunity?.protocol || "vault"} on Base`,
     protocol: quote.opportunity?.protocol || "LI.FI Composer",
     action: "deposit",
@@ -2073,6 +2121,17 @@ export async function prepareLifiDeposit(
     }
   }
 
+  let resolvedApy = `${(quote.expectedApy * 100).toFixed(1)}%`;
+  if (quote.expectedApy <= 0) {
+    try {
+      const lifiOpps = await discoverLifiOpportunities(normalizedSourceChain, undefined, asset.toUpperCase(), 25);
+      const vaultMatch = lifiOpps.opportunities.find((o) =>
+        (o.pool_address || "").toLowerCase() === (opportunityId || "").toLowerCase()
+      );
+      if (vaultMatch && vaultMatch.apy > 0) resolvedApy = `${vaultMatch.apy.toFixed(1)}%`;
+    } catch {}
+  }
+
   return {
     transaction: txData,
     needs_approval: needsApproval,
@@ -2081,7 +2140,7 @@ export async function prepareLifiDeposit(
     chain: normalizedSourceChain,
     asset: asset.toUpperCase(),
     amount,
-    estimated_apy: `${(quote.expectedApy * 100).toFixed(1)}%`,
+    estimated_apy: resolvedApy,
     risk_level: "medium",
   };
 }
@@ -2339,15 +2398,35 @@ export async function prepareDeposit(
       throw new Error(`Pool/vault address is required for ${protocol}. Provide the vault contract address as pool_address.`);
     }
 
+    let resolvedApy = "—";
+    try {
+      const lifiOpps = await discoverLifiOpportunities(chainLower, undefined, assetUpper, 25);
+      const vaultMatch = lifiOpps.opportunities.find((o) =>
+        (o.pool_address || "").toLowerCase() === (poolAddress || "").toLowerCase()
+      );
+      if (vaultMatch && vaultMatch.apy > 0) resolvedApy = `${vaultMatch.apy.toFixed(1)}%`;
+    } catch {}
+
     const chainId = CHAIN_IDS[chainLower] || 1;
     const vaultAddr = poolAddress as `0x${string}`;
+
+    let gasEstimate: GasEstimate;
+    try {
+      gasEstimate = await getGasEstimate(chainLower, "deposit");
+    } catch {
+      gasEstimate = { chain: chainLower, gas_price_gwei: 0.006, estimated_cost_usd: "~$0.00", estimated_cost_eth: "0", action: "deposit", timestamp: Date.now() };
+    }
+    let ethPrice: number;
+    try { ethPrice = await getEthPrice(); } catch { ethPrice = 3500; }
+    const gasCostEth = (gasEstimate.gas_price_gwei * 250000) / 1e9;
+
     txData = {
       to: vaultAddr,
       data: encodeTxData(VAULT_ABI, "deposit", [amountRaw, walletAddress]),
       value: BigInt(0),
       chain_id: chainId,
       gas_estimate: "~250,000 gas",
-      gas_cost_usd: "~$0.50",
+      gas_cost_usd: `$${(gasCostEth * ethPrice).toFixed(2)}`,
       description: `Deposit ${amount} ${asset} into ${protocol} vault`,
       protocol,
       action: "deposit",
@@ -2355,8 +2434,8 @@ export async function prepareDeposit(
       amount,
     };
     spender = vaultAddr;
-    estimatedApy = "—";
-    riskLevel = "high";
+    estimatedApy = resolvedApy;
+    riskLevel = "medium";
     console.log("[prepareDeposit] Using generic ERC-4626 path for", protocol, "→", vaultAddr);
   }
 
@@ -2401,12 +2480,93 @@ export async function prepareDeposit(
 
 export interface WithdrawPreparation {
   transaction: TransactionData;
+  needs_approval?: boolean;
+  approval_transaction?: TransactionData;
   protocol: string;
   chain: string;
   asset: string;
   amount: string;
   withdraw_all: boolean;
   current_value_usd: string;
+}
+
+async function prepareLifiWithdraw(params: {
+  positionTokenAddress: string;
+  asset: string;
+  requestedAmount: string;
+  quoteAmount: string;
+  chain: string;
+  walletAddress: string;
+  tokenDecimals: number;
+  protocol: string;
+  currentValueUsd: string;
+  withdrawAll: boolean;
+}): Promise<WithdrawPreparation> {
+  if (!isLifiBackendEnabled()) {
+    throw new Error("LI.FI backend is disabled");
+  }
+
+  const chainMap: Record<string, number> = {
+    ethereum: 1,
+    arbitrum: 42161,
+    optimism: 10,
+    base: 8453,
+    polygon: 137,
+    avalanche: 43114,
+    bnb: 56,
+  };
+
+  const normalizedChain = params.chain.toLowerCase();
+  const chainId = chainMap[normalizedChain] || 8453;
+  const assetUpper = params.asset.toUpperCase();
+  const toToken = TOKEN_ADDRESSES[normalizedChain]?.[assetUpper];
+
+  if (!toToken) {
+    throw new Error(`Token ${assetUpper} not found on ${normalizedChain} for LI.FI withdrawal`);
+  }
+
+  const parsedAmount = parseFloat(params.quoteAmount);
+  if (!isFinite(parsedAmount) || parsedAmount <= 0) {
+    throw new Error(`Invalid withdraw amount: ${params.quoteAmount}`);
+  }
+
+  const amountRaw = BigInt(Math.floor(parsedAmount * 10 ** params.tokenDecimals));
+  const quote = await lifiGetQuote({
+    chainId,
+    destinationChainId: chainId,
+    fromToken: params.positionTokenAddress,
+    toToken,
+    amount: String(amountRaw),
+    walletAddress: params.walletAddress,
+  });
+
+  const txData: TransactionData = {
+    to: quote.transaction.to as `0x${string}`,
+    data: quote.transaction.data as `0x${string}`,
+    value: BigInt(quote.transaction.value || "0"),
+    chain_id: chainId,
+    destination_chain_id: chainId,
+    gas_estimate: quote.transaction.gasLimit ? `${quote.transaction.gasLimit} gas` : "~250,000 gas",
+    gas_cost_usd: quote.estimatedGasCostUsd || "~$2.80",
+    description: params.withdrawAll
+      ? `Withdraw all ${assetUpper} via LI.FI Composer from ${params.protocol}`
+      : `Withdraw ${params.requestedAmount} ${assetUpper} via LI.FI Composer from ${params.protocol}`,
+    protocol: quote.opportunity?.protocol || params.protocol || "LI.FI Composer",
+    action: "withdraw",
+    asset: assetUpper,
+    amount: params.withdrawAll ? "all" : params.requestedAmount,
+    is_composer: true,
+  };
+
+  return {
+    transaction: txData,
+    protocol: txData.protocol,
+    chain: normalizedChain,
+    asset: assetUpper,
+    amount: params.withdrawAll ? "all" : params.requestedAmount,
+    withdraw_all: params.withdrawAll,
+    current_value_usd: params.currentValueUsd,
+  };
 }
 
 export async function prepareWithdraw(
@@ -2417,217 +2577,261 @@ export async function prepareWithdraw(
   console.log("[prepareWithdraw] input:", { positionId, amount, walletAddress });
   const isLifiFormat = positionId.includes(":");
   let protocol: string;
-  let chain: string;
   let asset: string;
 
   if (isLifiFormat) {
     const parts = positionId.split(":");
-    const chainIdNum = parts[0];
     protocol = (parts[1] || "").toLowerCase();
     asset = (parts[2] || "").toUpperCase();
-    const chainMap: Record<string, string> = {
-      "8453": "base", "1": "ethereum", "42161": "arbitrum",
-      "10": "optimism", "137": "polygon", "43114": "avalanche", "56": "bnb",
-    };
-    chain = chainMap[chainIdNum] || "base";
   } else {
-    [protocol, chain, asset] = positionId.toLowerCase().split("-");
+    [protocol, , asset] = positionId.toLowerCase().split("-");
     asset = asset.toUpperCase();
   }
+
+  const chain = "base";
   console.log("[prepareWithdraw] parsed:", { protocol, chain, asset, isLifiFormat });
 
   const assetUpper = asset.toUpperCase();
   const decimals = TOKEN_DECIMALS[assetUpper] || 18;
   const withdrawAll = amount.toLowerCase() === "max";
-  const amountRaw = withdrawAll
-    ? BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
-    : BigInt(Math.floor(parseFloat(amount) * 10 ** decimals));
 
-  let txData: TransactionData;
   let currentValueUsd = "$0.00";
+  const positions = await getPositions(walletAddress, undefined, chain).catch(() => null);
+  const matchingPosition = positions?.positions.find(
+    (p) => p.position_id.toLowerCase() === positionId.toLowerCase()
+  );
 
-  if (protocol.includes("aave")) {
-    const poolAddress = AAVE_V3_POOL_ADDRESSES[chain];
-    const tokenAddress = TOKEN_ADDRESSES[chain]?.[assetUpper];
-    
-    if (!poolAddress || !tokenAddress) {
-      throw new Error(`Invalid position or chain for withdrawal`);
-    }
-
-    const data = encodeTxData(AAVE_POOL_ABI, "withdraw", [
-      tokenAddress,
-      amountRaw,
-      walletAddress,
-    ]);
-    
-    const gasEstimate = await getGasEstimate(chain, "withdraw");
-    const ethPrice = await getEthPrice();
-    const gasCostEth = (gasEstimate.gas_price_gwei * 150000) / 1e9;
-
-    const positions = await getPositions(walletAddress, ["aave"], chain);
-    const position = positions.positions.find(
-      (p) => p.position_id.toLowerCase() === positionId.toLowerCase()
-    );
-    if (position) {
-      currentValueUsd = position.current_value;
-    }
-    
-    txData = {
-      to: poolAddress as `0x${string}`,
-      data,
-      value: BigInt(0),
-      chain_id: CHAIN_IDS[chain] || 1,
-      gas_estimate: "~150,000 gas",
-      gas_cost_usd: `$${(gasCostEth * ethPrice).toFixed(2)}`,
-      description: withdrawAll 
-        ? `Withdraw all ${asset} from Aave V3`
-        : `Withdraw ${amount} ${asset} from Aave V3`,
-      protocol: "Aave V3",
-      action: "withdraw",
-      asset: assetUpper,
-      amount: withdrawAll ? "all" : amount,
-    };
-  } else if (protocol.includes("compound")) {
-    const cometAddress = COMPOUND_V3_COMET_ADDRESSES[chain]?.[assetUpper];
-    const tokenAddress = TOKEN_ADDRESSES[chain]?.[assetUpper];
-    
-    if (!cometAddress || !tokenAddress) {
-      throw new Error(`Invalid position or chain for withdrawal`);
-    }
-
-    const data = encodeTxData(COMPOUND_COMET_ABI, "withdraw", [
-      tokenAddress,
-      amountRaw,
-    ]);
-    
-    const gasEstimate = await getGasEstimate(chain, "withdraw");
-    const ethPrice = await getEthPrice();
-    const gasCostEth = (gasEstimate.gas_price_gwei * 120000) / 1e9;
-
-    txData = {
-      to: cometAddress as `0x${string}`,
-      data,
-      value: BigInt(0),
-      chain_id: CHAIN_IDS[chain] || 1,
-      gas_estimate: "~120,000 gas",
-      gas_cost_usd: `$${(gasCostEth * ethPrice).toFixed(2)}`,
-      description: withdrawAll
-        ? `Withdraw all ${asset} from Compound V3`
-        : `Withdraw ${amount} ${asset} from Compound V3`,
-      protocol: "Compound V3",
-      action: "withdraw",
-      asset: assetUpper,
-      amount: withdrawAll ? "all" : amount,
-    };
-  } else {
-    let vaultAddress: string | null = null;
-    const protocolLower = protocol.toLowerCase();
-
-    const positions = await getPositions(walletAddress, undefined, chain).catch(() => null);
-    const matchingPosition = positions?.positions.find(
-      (p) => p.position_id.toLowerCase() === positionId.toLowerCase()
-    );
-
-    if (matchingPosition?.pool_address && /^0x[a-fA-F0-9]{40}$/.test(matchingPosition.pool_address)) {
-      const addrLower = matchingPosition.pool_address.toLowerCase();
-      const isKnownToken = Object.values(TOKEN_ADDRESSES).some((chainTokens) =>
-        Object.values(chainTokens).some((ta) => ta.toLowerCase() === addrLower)
-      );
-      if (!isKnownToken) {
-        vaultAddress = matchingPosition.pool_address;
-      }
-    }
-
-    if (!vaultAddress) {
-      const protocolVaults = PROTOCOL_VAULT_ADDRESSES[chain]?.[protocolLower];
-      if (protocolVaults?.[assetUpper]) {
-        vaultAddress = protocolVaults[assetUpper];
-      }
-    }
-
-    if (!vaultAddress && isLifiBackendEnabled() && chain === "base") {
-      try {
-        const lifiOpps = await discoverLifiOpportunities(chain, undefined, assetUpper, 50);
-        const match = lifiOpps.opportunities.find((o) => {
-          const protoName = (o.protocol || "").toLowerCase();
-          return protoName.includes(protocolLower) || protocolLower.includes(protoName);
-        });
-        if (match?.pool_address && /^0x[a-fA-F0-9]{40}$/.test(match.pool_address)) {
-          vaultAddress = match.pool_address;
-        }
-      } catch (_) {
-        console.warn("[prepareWithdraw] LI.FI vault lookup failed");
-      }
-    }
-
-    if (!vaultAddress) {
-      try {
-        const resolved = await discoverOpportunities(chain, undefined, undefined, undefined, undefined, assetUpper, 50);
-        const match = resolved.opportunities.find((o) => {
-          const protoName = (o.protocol || "").toLowerCase();
-          return protoName.includes(protocolLower) || protocolLower.includes(protoName);
-        });
-        if (match?.pool_address && /^0x[a-fA-F0-9]{40}$/.test(match.pool_address)) {
-          vaultAddress = match.pool_address;
-        }
-      } catch (_) {
-        console.warn("[prepareWithdraw] DeFi Llama vault lookup failed");
-      }
-    }
-
-    if (!vaultAddress) {
-      console.error("[prepareWithdraw] NO vault address found for:", { protocolLower, chain, assetUpper, positionId });
-      throw new Error(`Cannot find vault address for ${protocol} on ${chain}. The protocol may not support direct withdrawal through this tool.`);
-    }
-    console.log("[prepareWithdraw] vault resolved:", vaultAddress);
-
-    const isMorphoProtocol = protocolLower.includes("morpho");
-    const withdrawAbi = isMorphoProtocol ? MORPHO_MARKET_ABI : ERC4626_WITHDRAW_ABI;
-
-    const gasEstimate = await getGasEstimate(chain, "withdraw").catch(() => ({
-      chain, gas_price_gwei: 0.005, estimated_cost_usd: "~$0.01", estimated_cost_eth: "0", action: "withdraw", timestamp: Date.now(),
-    }));
-    const ethPrice = await getEthPrice().catch(() => 3500);
-    const gasCostEth = (gasEstimate.gas_price_gwei * 200000) / 1e9;
-
-    if (positions && (!currentValueUsd || currentValueUsd === "$0.00")) {
-      const pos = positions.positions.find(
-        (p) => p.position_id.toLowerCase() === positionId.toLowerCase()
-      );
-      if (pos) currentValueUsd = pos.current_value;
-    }
-
-    const displayProtocol = protocol
-      .split("-")
-      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-      .join(" ");
-
-    txData = {
-      to: vaultAddress as `0x${string}`,
-      data: encodeTxData(withdrawAbi, "withdraw", [amountRaw, walletAddress, walletAddress]),
-      value: BigInt(0),
-      chain_id: CHAIN_IDS[chain] || 8453,
-      gas_estimate: isMorphoProtocol ? "~250,000 gas" : "~200,000 gas",
-      gas_cost_usd: `$${(gasCostEth * ethPrice).toFixed(2)}`,
-      description: withdrawAll
-        ? `Withdraw all ${asset} from ${displayProtocol}`
-        : `Withdraw ${amount} ${asset} from ${displayProtocol}`,
-      protocol: displayProtocol,
-      action: "withdraw",
-      asset: assetUpper,
-      amount: withdrawAll ? "all" : amount,
-    };
+  if (matchingPosition?.current_value) {
+    currentValueUsd = matchingPosition.current_value;
   }
 
-  return {
-    transaction: txData,
-    protocol: txData.protocol,
-    chain,
-    asset: assetUpper,
-    amount: withdrawAll ? "all" : amount,
-    withdraw_all: withdrawAll,
-    current_value_usd: currentValueUsd,
-  };
+  const quoteAmount = withdrawAll
+    ? (matchingPosition?.deposited ? extractNumericAmount(matchingPosition.deposited) : amount)
+    : amount;
+
+  console.log("[prepareWithdraw] debug:", { isLifiBackendEnabled: isLifiBackendEnabled(), quoteAmount });
+
+  if (!isLifiBackendEnabled()) {
+    throw new Error("LI.FI backend is disabled. Cannot process withdrawal.");
+  }
+
+  if (!quoteAmount) {
+    throw new Error(`Invalid withdrawal amount: ${amount}`);
+  }
+
+  let lifiPosition: LifiPosition | null = null;
+  const protocolLower = protocol.toLowerCase();
+
+  try {
+    const lifiData = await lifiGetPositions(walletAddress);
+    console.log("[prepareWithdraw] LI.FI positions:", lifiData.positions.length, lifiData.positions.map(p => ({ id: p.id, protocol: p.protocol, symbol: p.tokenSymbol, oppId: p.opportunityId })));
+    lifiPosition = lifiData.positions.find((p) => {
+      const protoMatch = (p.protocol || "").toLowerCase().includes(protocolLower) || protocolLower.includes((p.protocol || "").toLowerCase());
+      const assetMatch = (p.tokenSymbol || "").toUpperCase() === assetUpper;
+      return protoMatch && assetMatch;
+    }) || null;
+    if (lifiPosition) {
+      console.log("[prepareWithdraw] found LI.FI position:", lifiPosition.id, "opportunityId:", lifiPosition.opportunityId);
+    }
+  } catch (posErr) {
+    console.warn("[prepareWithdraw] lifiGetPositions failed:", posErr instanceof Error ? posErr.message : posErr);
+  }
+
+  if (!lifiPosition) {
+    try {
+      const lifiOpps = await discoverLifiOpportunities(chain, undefined, assetUpper, 50);
+      console.log("[prepareWithdraw] LI.FI opportunities found:", lifiOpps.opportunities.length, lifiOpps.opportunities.map(o => ({ protocol: o.protocol, pool: o.pool_address })));
+      const match = lifiOpps.opportunities.find((o) => {
+        const protoName = (o.protocol || "").toLowerCase();
+        return protoName.includes(protocolLower) || protocolLower.includes(protoName);
+      });
+      if (match?.pool_address && /^0x[a-fA-F0-9]{40}$/.test(match.pool_address)) {
+        lifiPosition = {
+          id: `${chain}:${protocol}:${assetUpper}`,
+          opportunityId: match.pool_address,
+          protocol: match.protocol,
+          chainId: 8453,
+          chainName: "Base",
+          tokenAddress: TOKEN_ADDRESSES[chain]?.[assetUpper] || "",
+          tokenDecimals: decimals,
+          tokenSymbol: assetUpper,
+          depositedAmount: quoteAmount,
+          depositedAmountUsd: currentValueUsd,
+          currentApy: 0,
+          entryTime: new Date().toISOString(),
+          status: "active",
+        };
+        console.log("[prepareWithdraw] fallback: created position from discovery:", lifiPosition.opportunityId);
+      }
+    } catch (discErr) {
+      console.warn("[prepareWithdraw] LI.FI opportunity discovery failed:", discErr instanceof Error ? discErr.message : discErr);
+    }
+  }
+
+  if (!lifiPosition) {
+    throw new Error(`No ${protocol} ${assetUpper} position found on Base via LI.FI. Ensure you have an active deposit.`);
+  }
+
+  const toToken = TOKEN_ADDRESSES[chain]?.[assetUpper];
+  if (!toToken) {
+    throw new Error(`Token ${assetUpper} not supported on Base`);
+  }
+
+  let fromTokenVault: string | null = null;
+
+  if (lifiPosition.opportunityId && /^0x[a-fA-F0-9]{40}$/.test(lifiPosition.opportunityId) && lifiPosition.opportunityId.toLowerCase() !== toToken.toLowerCase()) {
+    fromTokenVault = lifiPosition.opportunityId;
+    console.log("[prepareWithdraw] using opportunityId as fromToken:", fromTokenVault);
+  }
+
+  if (!fromTokenVault) {
+    try {
+      const lifiOpps = await discoverLifiOpportunities(chain, undefined, assetUpper, 50);
+      console.log("[prepareWithdraw] discovering vault for withdrawal, opportunities:", lifiOpps.opportunities.length);
+      const match = lifiOpps.opportunities.find((o) => {
+        const protoName = (o.protocol || "").toLowerCase();
+        return protoName.includes(protocolLower) || protocolLower.includes(protoName);
+      });
+      if (match?.pool_address && /^0x[a-fA-F0-9]{40}$/.test(match.pool_address) && match.pool_address.toLowerCase() !== toToken.toLowerCase()) {
+        fromTokenVault = match.pool_address;
+        console.log("[prepareWithdraw] discovered vault as fromToken:", fromTokenVault);
+      }
+    } catch (discErr) {
+      console.warn("[prepareWithdraw] vault discovery failed:", discErr instanceof Error ? discErr.message : discErr);
+    }
+  }
+
+  if (!fromTokenVault) {
+    throw new Error(`Cannot find vault address for ${protocol} ${assetUpper} withdrawal. Vault address must differ from output token (${toToken}).`);
+  }
+
+  const amountRaw = BigInt(Math.floor(parseFloat(quoteAmount) * 10 ** (lifiPosition.tokenDecimals || decimals)));
+
+  try {
+    const quote = await lifiGetQuote({
+      chainId: 8453,
+      destinationChainId: 8453,
+      opportunityId: fromTokenVault,
+      fromToken: fromTokenVault,
+      toToken,
+      amount: String(amountRaw),
+      walletAddress,
+    });
+
+    const txData: TransactionData = {
+      to: quote.transaction.to as `0x${string}`,
+      data: quote.transaction.data as `0x${string}`,
+      value: BigInt(quote.transaction.value || "0"),
+      chain_id: 8453,
+      destination_chain_id: 8453,
+      gas_estimate: quote.transaction.gasLimit ? `${quote.transaction.gasLimit} gas` : "~250,000 gas",
+      gas_cost_usd: quote.estimatedGasCostUsd || "~$2.80",
+      description: withdrawAll
+        ? `Withdraw all ${assetUpper} via LI.FI Composer from ${lifiPosition.protocol}`
+        : `Withdraw ${amount} ${assetUpper} via LI.FI Composer from ${lifiPosition.protocol}`,
+      protocol: quote.opportunity?.protocol || lifiPosition.protocol || protocol,
+      action: "withdraw",
+      asset: assetUpper,
+      amount: withdrawAll ? "all" : amount,
+      is_composer: true,
+    };
+
+    let withdrawApprovalTx: TransactionData | undefined;
+    let withdrawNeedsApproval = false;
+
+    if (quote.approval) {
+      withdrawNeedsApproval = true;
+      const approvalData = encodeTxData(ERC20_ABI, "approve", [
+        quote.approval.spender,
+        BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+      ]);
+      withdrawApprovalTx = {
+        to: fromTokenVault as `0x${string}`,
+        data: approvalData,
+        value: BigInt(0),
+        chain_id: 8453,
+        gas_estimate: "~50,000 gas",
+        gas_cost_usd: "~$0.01",
+        description: `Approve vault share tokens for LI.FI Composer withdrawal`,
+        protocol: "ERC20",
+        action: "approve",
+        asset: assetUpper,
+        amount: "unlimited",
+      };
+    } else {
+      try {
+        const rpcUrl = ETH_RPC_URLS[chain];
+        if (rpcUrl && fromTokenVault) {
+          const allowanceData = await rpcCall(rpcUrl, "eth_call", [
+            {
+              to: fromTokenVault,
+              data:
+                "0xdd62ed3e" +
+                walletAddress.slice(2).padStart(64, "0") +
+                txData.to.slice(2).padStart(64, "0"),
+            },
+            "latest",
+          ]);
+          const allowanceRaw = BigInt(allowanceData as string || "0x0");
+          withdrawNeedsApproval = allowanceRaw === BigInt(0);
+          if (withdrawNeedsApproval) {
+            const approvalData = encodeTxData(ERC20_ABI, "approve", [
+              txData.to,
+              BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+            ]);
+            withdrawApprovalTx = {
+              to: fromTokenVault as `0x${string}`,
+              data: approvalData,
+              value: BigInt(0),
+              chain_id: 8453,
+              gas_estimate: "~50,000 gas",
+              gas_cost_usd: "~$0.01",
+              description: `Approve vault share tokens for LI.FI Composer withdrawal`,
+              protocol: "ERC20",
+              action: "approve",
+              asset: assetUpper,
+              amount: "unlimited",
+            };
+          }
+        } else {
+          withdrawNeedsApproval = true;
+        }
+      } catch {
+        withdrawNeedsApproval = true;
+        const approvalData = encodeTxData(ERC20_ABI, "approve", [
+          txData.to,
+          BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+        ]);
+        withdrawApprovalTx = {
+          to: fromTokenVault as `0x${string}`,
+          data: approvalData,
+          value: BigInt(0),
+          chain_id: 8453,
+          gas_estimate: "~50,000 gas",
+          gas_cost_usd: "~$0.01",
+          description: `Approve vault share tokens for LI.FI Composer withdrawal`,
+          protocol: "ERC20",
+          action: "approve",
+          asset: assetUpper,
+          amount: "unlimited",
+        };
+      }
+    }
+
+    return {
+      transaction: txData,
+      needs_approval: withdrawNeedsApproval,
+      approval_transaction: withdrawApprovalTx,
+      protocol: txData.protocol,
+      chain,
+      asset: assetUpper,
+      amount: withdrawAll ? "all" : amount,
+      withdraw_all: withdrawAll,
+      current_value_usd: lifiPosition.depositedAmountUsd || currentValueUsd,
+    };
+  } catch (quoteErr) {
+    throw new Error(`LI.FI withdrawal quote failed: ${quoteErr instanceof Error ? quoteErr.message : String(quoteErr)}`);
+  }
 }
 
 export interface ExecutionResult {

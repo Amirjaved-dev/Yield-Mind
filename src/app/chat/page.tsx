@@ -47,6 +47,8 @@ import {
   type WithdrawPreparation,
 } from "@/hooks/useTransactionFlow";
 import { MODELS, DEFAULT_MODEL, TIER_LABELS, type ModelOption } from "@/lib/models";
+import { useSlashCommands } from "@/hooks/use-slash-commands";
+import type { SlashCommand } from "@/lib/slash-commands";
 
 type MessageStatus = "thinking" | "streaming" | "done" | "error";
 
@@ -418,8 +420,9 @@ function MessageBubble({
   const isThinking = message.status === "thinking";
   const isStreaming = message.status === "streaming" && message.content.length > 0;
   const isDone = message.status === "done";
+  const isError = message.status === "error";
 
-  if (isThinking || (!isDone && !isUser && !isSystem)) return null;
+  if (isThinking || ((!isDone && !isError) && !isUser && !isSystem)) return null;
 
   return (
     <div
@@ -452,19 +455,30 @@ function MessageBubble({
             {isDone && <span className="ml-auto text-[10px] text-white/20">done</span>}
           </div>
         )}
-        {isUser || isSystem || message.status === "error" ? (
+        {isUser || isSystem ? (
           <p className="whitespace-pre-wrap text-sm leading-relaxed">{message.content}</p>
+        ) : message.status === "error" ? (
+          <div className="rounded-xl border border-red-400/15 bg-red-500/5 px-4 py-3">
+            <div className="flex items-start gap-2.5">
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-red-500/10">
+                <span className="text-[11px] font-bold text-red-400">!</span>
+              </span>
+              <div>
+                <p className="text-[13px] font-medium text-red-300/90 leading-relaxed">{message.content}</p>
+                {onRetry && (
+                  <button onClick={onRetry} className="mt-2 text-xs font-medium text-red-400/70 transition-colors hover:text-red-300">
+                    Try again
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
         ) : (isDone || isStreaming) ? (
           <div className="relative">
             <AssistantMarkdown content={message.content} />
             {isStreaming && <BlinkingCursor />}
           </div>
         ) : null}
-        {message.status === "error" && onRetry && (
-          <button onClick={onRetry} className="mt-3 text-xs font-medium text-[#f59e0b] transition-colors hover:text-[#f59e0b]/80">
-            Try again
-          </button>
-        )}
         {message.pendingAction && onActionConfirm && message.status !== "error" && (
           <div className="mt-3">
             <ActionCard
@@ -531,6 +545,67 @@ function EmptyState({ onSuggestion }: { onSuggestion: (s: string) => void }) {
   );
 }
 
+function SlashCommandMenu({
+  commands,
+  selectedIndex,
+  onSelect,
+  onClose,
+}: {
+  commands: SlashCommand[];
+  selectedIndex: number;
+  onSelect: (cmd: SlashCommand) => void;
+  onClose: () => void;
+}) {
+  if (commands.length === 0) return null;
+
+  return (
+    <div className="absolute bottom-full left-0 right-0 mb-2 rounded-xl border border-white/[0.08] bg-[#0d1817]/98 backdrop-blur-xl shadow-xl shadow-black/50 overflow-hidden z-[9999]">
+      <div className="px-3 py-2 border-b border-white/[0.04]">
+        <span className="text-[10px] font-medium uppercase tracking-wider text-white/30">Commands</span>
+      </div>
+      <div className="max-h-52 overflow-y-auto py-1">
+        {commands.map((cmd, idx) => {
+          const Icon = cmd.icon;
+          const isActive = idx === selectedIndex;
+          return (
+            <button
+              key={cmd.name}
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => onSelect(cmd)}
+              className={cn(
+                "w-full flex items-center gap-3 px-3 py-2 text-left transition-colors cursor-pointer",
+                isActive ? "bg-[#88fff7]/[0.08]" : "hover:bg-white/[0.03]",
+              )}
+            >
+              <div className={cn(
+                "flex items-center justify-center h-7 w-7 rounded-lg shrink-0 transition-colors",
+                isActive ? "bg-[#88fff7]/10" : "bg-white/[0.04]",
+              )}>
+                <Icon size={14} className={cn(isActive ? "text-[#88fff7]" : "text-white/40")} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className={cn(
+                  "text-sm font-medium",
+                  isActive ? "text-white/95" : "text-white/60",
+                )}>
+                  /{cmd.name}
+                </div>
+                <div className="text-[11px] text-white/25 truncate">{cmd.description}</div>
+              </div>
+              {isActive && (
+                <span className="text-[10px] text-white/20 font-mono px-1.5 py-0.5 rounded bg-white/[0.04]">
+                  ↵
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function InputBar({
   value,
   disabled = false,
@@ -540,6 +615,7 @@ function InputBar({
   onChange,
   onSubmit,
   onStop,
+  slashMenu,
 }: {
   value: string;
   disabled?: boolean;
@@ -549,6 +625,14 @@ function InputBar({
   onChange: (value: string) => void;
   onSubmit: () => void;
   onStop: () => void;
+  slashMenu?: {
+    show: boolean;
+    commands: SlashCommand[];
+    selectedIndex: number;
+    setSelectedIndex: (idx: number | ((prev: number) => number)) => void;
+    onSelect: (cmd: SlashCommand) => void;
+    onClose: () => void;
+  };
 }) {
   const { textareaRef, adjustHeight } = useAutoResizeTextarea({ minHeight: 52, maxHeight: 180 });
 
@@ -561,6 +645,36 @@ function InputBar({
   }, [adjustHeight, value]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashMenu?.show) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        slashMenu.setSelectedIndex((prev) => (prev + 1) % slashMenu.commands.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        slashMenu.setSelectedIndex((prev) => (prev - 1 + slashMenu.commands.length) % slashMenu.commands.length);
+        return;
+      }
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        const selected = slashMenu.commands[slashMenu.selectedIndex];
+        if (selected) slashMenu.onSelect(selected);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        slashMenu.onClose();
+        return;
+      }
+      if (event.key === "Tab") {
+        event.preventDefault();
+        const selected = slashMenu.commands[slashMenu.selectedIndex];
+        if (selected) slashMenu.onSelect(selected);
+        return;
+      }
+    }
+
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       if (!isStreaming) onSubmit();
@@ -568,7 +682,15 @@ function InputBar({
   };
 
   return (
-    <div className="w-full max-w-2xl">
+    <div className="w-full max-w-2xl relative">
+      {slashMenu?.show && (
+        <SlashCommandMenu
+          commands={slashMenu.commands}
+          selectedIndex={slashMenu.selectedIndex}
+          onSelect={slashMenu.onSelect}
+          onClose={slashMenu.onClose}
+        />
+      )}
       <div
         className={cn(
           "rounded-2xl border bg-[#091615]/90 p-3 shadow-[0_24px_90px_rgba(0,0,0,0.52)] ring-1 backdrop-blur-md transition-colors",
@@ -585,7 +707,7 @@ function InputBar({
             adjustHeight();
           }}
           onKeyDown={handleKeyDown}
-          placeholder="Describe the yield strategy you want to execute..."
+          placeholder="Describe your yield strategy... (type / for commands)"
           disabled={disabled}
           rows={1}
           className="w-full resize-none bg-transparent text-white placeholder-gray-500 outline-none text-[15px] leading-relaxed"
@@ -842,6 +964,18 @@ function Sidebar({
 }
 
 export default function ChatPage() {
+  const {
+    showMenu,
+    matchedCommands,
+    selectedIndex,
+    setSelectedIndex,
+    handleInputChange: handleSlashInputChange,
+    handleKeyDown: handleSlashKeyDown,
+    tryExecute,
+    selectCommand,
+    closeMenu,
+  } = useSlashCommands();
+
   const searchParams = useSearchParams();
   const { address, isConnected } = useAccount();
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -892,6 +1026,45 @@ export default function ChatPage() {
   const streamPromptRef = useRef<((prompt: string) => Promise<void>) | null>(null);
 
   const currentChatIdRef = useRef<string | null>(null);
+
+  const handleSlashCommandResult = useCallback((result: NonNullable<ReturnType<typeof tryExecute>>) => {
+    if (result.type === "action" && result.action === "clear") {
+      if (activeChatId) deleteChat(activeChatId);
+      createChat();
+      setMessages([]);
+      nextIdRef.current = 1;
+      return;
+    }
+
+    if (result.type === "message") {
+      const msgId = nextIdRef.current++;
+      setMessages((prev) => [
+        ...prev,
+        { id: msgId, role: "system" as const, content: "# " + result.title + "\n\n" + result.content, status: "done" as const },
+      ]);
+      if (activeChatId) {
+        updateChat(activeChatId, (c) => ({
+          ...c,
+          messages: [...c.messages, { id: msgId, role: "system" as const, content: "# " + result.title + "\n\n" + result.content, status: "done" as const }],
+        }));
+      }
+    }
+  }, [activeChatId, createChat, deleteChat, updateChat]);
+
+  const handleCombinedInputChange = useCallback((newValue: string) => {
+    setValue(newValue);
+    handleSlashInputChange(newValue);
+  }, [handleSlashInputChange]);
+
+  const handleSubmitWithSlashCheck = useCallback(() => {
+    const cmdResult = tryExecute(value);
+    if (cmdResult) {
+      handleSlashCommandResult(cmdResult);
+      setValue("");
+      return;
+    }
+    void streamPromptRef.current?.(value);
+  }, [value, tryExecute, handleSlashCommandResult]);
 
   useEffect(() => {
     localStorage.setItem("yieldmind_model", selectedModel);
@@ -1130,6 +1303,34 @@ export default function ChatPage() {
                     type: actionType,
                     preparation: actionPrep,
                   },
+                });
+                break;
+              }
+              case "adapting": {
+                upsertStep({
+                  index: 999,
+                  label: `Adapting plan... (cycle ${data.cycle || "?"})`,
+                  icon: "sparkles",
+                  status: "active",
+                });
+                break;
+              }
+              case "adaptation_decision": {
+                upsertStep({
+                  index: 999,
+                  label: `${data.strategy}: ${data.reason || "Recovering from issue"}`,
+                  icon: "sparkles",
+                  status: "done",
+                  summary: data.messageToUser as string | undefined,
+                });
+                break;
+              }
+              case "recovery_attempt": {
+                upsertStep({
+                  index: 999,
+                  label: `Retry ${data.tool} (${data.strategy}, attempt ${data.attempt})`,
+                  icon: "sparkles",
+                  status: "active",
                 });
                 break;
               }
@@ -1377,9 +1578,25 @@ export default function ChatPage() {
               isStreaming={isStreaming}
               selectedModel={selectedModel}
               onModelChange={setSelectedModel}
-              onChange={setValue}
-              onSubmit={() => void streamPromptRef.current?.(value)}
+              onChange={handleCombinedInputChange}
+              onSubmit={handleSubmitWithSlashCheck}
               onStop={handleStop}
+              slashMenu={
+                showMenu
+                  ? {
+                      show: showMenu,
+                      commands: matchedCommands,
+                      selectedIndex,
+                      setSelectedIndex,
+                      onSelect: (cmd) => {
+                        const result = selectCommand(cmd);
+                        if (result) handleSlashCommandResult(result);
+                        setValue("");
+                      },
+                      onClose: closeMenu,
+                    }
+                  : undefined
+              }
             />
           </div>
         </div>

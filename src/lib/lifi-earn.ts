@@ -55,8 +55,9 @@ export interface LifiOpportunity {
 export interface LifiQuoteRequest {
   chainId: number;
   destinationChainId?: number;
-  opportunityId: string;
+  opportunityId?: string;
   fromToken: string;
+  toToken?: string;
   amount: string;
   slippage?: number;
   walletAddress?: string;
@@ -118,12 +119,74 @@ export interface LifiPosition {
   protocol: string;
   chainId: number;
   chainName: string;
+  tokenAddress: string;
+  tokenDecimals: number;
   tokenSymbol: string;
   depositedAmount: string;
   depositedAmountUsd: string;
   currentApy: number;
   entryTime: string;
   status: "active" | "withdrawn" | "pending";
+}
+
+const TRUSTED_PROTOCOLS = [
+  "aave", "aave v3", "aave v2",
+  "morpho", "morpho vault", "morpho aave", "morpho compound",
+  "compound", "compound iii", "comet",
+  "euler",
+  "pendle",
+  "lido", "wsteth", "steth",
+  "etherfi", "eeth",
+  "hyperlend",
+  "seamless",
+  "moonwell",
+  "venus",
+  "spark",
+  "yearn",
+  "angelo",
+  "swaev",
+  "yo", "yo protocol",
+  "usd0", "usd0++",
+  "nile",
+  "exactum",
+  "flux",
+  "odyssey",
+  "aerodrome",
+  "base swap",
+  "mkr", "maker",
+  "lybra",
+  "grain",
+  "benqi",
+  "silofinance", "silo",
+  "magpie",
+  "overnight",
+  "usdm", "sdai",
+  "easylend",
+  "balancer", "convex",
+  "bluefin",
+  "tinct",
+];
+
+const KNOWN_ASSETS = ["USDC", "USDbC", "ETH", "WETH", "WBTC", "DAI", "USDT", "stETH", "wstETH"];
+
+function isLegitimateVault(opp: LifiOpportunity): boolean {
+  const symbolUpper = opp.tokenSymbol.toUpperCase().trim();
+  const nameLower = (opp.name || "").toLowerCase().trim();
+
+  const isLpPairToken = symbolUpper.includes("-") || /LP$|CBTC|RBI|REI|AITV|CBBTC/i.test(symbolUpper);
+
+  const insaneApy = opp.apy > 500;
+
+  const dustTvl = opp.tvlUsd < 10_000;
+
+  const emptyName = !nameLower || nameLower.length < 2 || /^(unknown|-|\/)$/i.test(nameLower);
+
+  if (isLpPairToken) return false;
+  if (insaneApy) return false;
+  if (dustTvl) return false;
+  if (emptyName) return false;
+
+  return true;
 }
 
 export async function lifiDiscoverOpportunities(params?: {
@@ -169,34 +232,36 @@ export async function lifiDiscoverOpportunities(params?: {
   const json = await res.json();
   const rawOpps: Record<string, unknown>[] = json.data || json.opportunities || [];
 
-  const opportunities: LifiOpportunity[] = rawOpps.map((opp: Record<string, unknown>) => {
-    const lpToken = Array.isArray(opp.lpTokens) ? (opp.lpTokens[0] as Record<string, unknown> | undefined) : undefined;
-    const protocolData = isRecord(opp.protocol) ? opp.protocol : null;
-    const analytics = isRecord(opp.analytics) ? opp.analytics : null;
-    const apyData = analytics && isRecord(analytics.apy) ? analytics.apy : null;
-    const tvlData = analytics && isRecord(analytics.tvl) ? analytics.tvl : null;
+  const opportunities: LifiOpportunity[] = rawOpps
+    .map((opp: Record<string, unknown>) => {
+      const lpToken = Array.isArray(opp.lpTokens) ? (opp.lpTokens[0] as Record<string, unknown> | undefined) : undefined;
+      const protocolData = isRecord(opp.protocol) ? opp.protocol : null;
+      const analytics = isRecord(opp.analytics) ? opp.analytics : null;
+      const apyData = analytics && isRecord(analytics.apy) ? analytics.apy : null;
+      const tvlData = analytics && isRecord(analytics.tvl) ? analytics.tvl : null;
 
-    return {
-      id: String(lpToken?.address || opp.address || ""),
-      name: String(opp.name || protocolData?.name || "Unknown Vault"),
-      protocol: String(protocolData?.name || opp.protocol || "Unknown"),
-      chainId: Number(opp.chainId || 8453),
-      chainName: String(opp.network || "Base"),
-      tokenAddress: String(lpToken?.address || opp.address || ""),
-      tokenSymbol: String(lpToken?.symbol || opp.asset || "Unknown"),
-      tokenDecimals: Number(lpToken?.decimals || 18),
-      apy: Number(apyData?.total ?? 0),
-      tvlUsd: Number(tvlData?.usd ?? 0),
-      riskLevel: "medium",
-      tags: Array.isArray(opp.tags) ? (opp.tags as string[]) : undefined,
-    };
-  });
+      return {
+        id: String(lpToken?.address || opp.address || ""),
+        name: String(opp.name || protocolData?.name || "Unknown Vault"),
+        protocol: String(protocolData?.name || opp.protocol || "Unknown"),
+        chainId: Number(opp.chainId || 8453),
+        chainName: String(opp.network || "Base"),
+        tokenAddress: String(lpToken?.address || opp.address || ""),
+        tokenSymbol: String(lpToken?.symbol || opp.asset || "Unknown"),
+        tokenDecimals: Number(lpToken?.decimals || 18),
+        apy: Number(apyData?.total ?? 0),
+        tvlUsd: Number(tvlData?.usd ?? 0),
+        riskLevel: "medium" as const,
+        tags: Array.isArray(opp.tags) ? (opp.tags as string[]) : undefined,
+      };
+    })
+    .filter(isLegitimateVault);
 
-  const filteredOpportunities = params?.minApy ? opportunities.filter((opp) => opp.apy >= params.minApy!) : opportunities;
+  const filteredByMinApy = params?.minApy ? opportunities.filter((opp) => opp.apy >= params.minApy!) : opportunities;
 
   return {
-    opportunities: filteredOpportunities,
-    totalCount: json.total || json.totalCount || filteredOpportunities.length,
+    opportunities: filteredByMinApy,
+    totalCount: json.total || json.totalCount || filteredByMinApy.length,
   };
 }
 
@@ -274,7 +339,7 @@ export async function lifiGetQuote(request: LifiQuoteRequest): Promise<LifiQuote
     priceImpact: estimate.priceImpact || json.priceImpact,
     validForSeconds: Number(json.validForSeconds ?? estimate.validForSeconds ?? 30),
     opportunity: {
-      id: request.opportunityId,
+      id: request.opportunityId ?? request.toToken ?? "",
       protocol,
       apy: Number(json.expectedApy ?? estimate.expectedApy ?? 0),
     },
@@ -355,6 +420,8 @@ export async function lifiGetPositions(walletAddress: string): Promise<{
     protocol: String(pos.protocolName || "Unknown"),
     chainId: Number(pos.chainId || 1),
     chainName: String(pos.chainId === 8453 ? "Base" : pos.chainId === 1 ? "Ethereum" : "Unknown"),
+    tokenAddress: String(pos.asset && isRecord(pos.asset) ? pos.asset.address || "" : ""),
+    tokenDecimals: Number(pos.asset && isRecord(pos.asset) ? pos.asset.decimals || 18 : 18),
     tokenSymbol: String(pos.asset && isRecord(pos.asset) ? pos.asset.symbol || "Unknown" : pos.symbol || "Unknown"),
     depositedAmount: String(pos.balanceNative || pos.amount || "0"),
     depositedAmountUsd: String(pos.balanceUsd || pos.amountUsd || "$0.00"),

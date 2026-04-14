@@ -97,6 +97,10 @@ export function TransactionModal({
   const destinationChainName = transaction?.destination_chain_id
     ? CHAIN_NAMES[transaction.destination_chain_id]
     : null;
+  const isWithdraw = transaction?.action === "withdraw";
+  const isComposer = !!transaction?.is_composer;
+  const actionLabel = isWithdraw ? "withdrawal" : "deposit";
+  const actionPastTense = isWithdraw ? "withdrawn from" : "deposited into";
 
   const handleConfirm = async () => {
     setError(null);
@@ -175,18 +179,22 @@ export function TransactionModal({
                     <div>
                       <p className="text-sm text-amber-200 font-medium">Approval Required</p>
                       <p className="text-xs text-amber-300/70 mt-0.5">
-                        You&apos;ll need to approve {asset || "this asset"} for {protocol || "this protocol"} before depositing. This is a one-time transaction.
+                        You&apos;ll need to approve {asset || "this asset"} for {protocol || "this protocol"} before {isComposer ? "starting the Composer route" : "depositing"}. This is a one-time transaction.
                       </p>
                     </div>
                   </div>
                 </div>
               )}
 
-              {transaction?.is_composer && !needsApproval && (
+              {isComposer && (
                 <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3">
                   <p className="text-sm text-cyan-200 font-medium">LI.FI Composer Route</p>
                   <p className="text-xs text-cyan-100/70 mt-0.5">
-                    Swap, bridge, and deposit steps are bundled into a single Composer transaction.
+                    {isWithdraw
+                      ? "The vault exit and any routing steps are bundled into a single Composer withdrawal transaction."
+                      : needsApproval
+                        ? "After approval, the swap, bridge, and deposit steps are bundled into a single Composer transaction."
+                        : "Swap, bridge, and deposit steps are bundled into a single Composer transaction."}
                   </p>
                 </div>
               )}
@@ -195,7 +203,7 @@ export function TransactionModal({
                 <div className="flex items-start gap-2">
                   <AlertTriangle size={14} className="text-gray-500 shrink-0 mt-0.5" />
                   <p className="text-xs text-gray-500">
-                    DeFi protocols carry smart contract risk. Only deposit what you can afford to lose. This transaction cannot be reversed once confirmed.
+                    DeFi protocols carry smart contract risk. This transaction cannot be reversed once confirmed.
                   </p>
                 </div>
               </div>
@@ -212,7 +220,15 @@ export function TransactionModal({
                 onClick={handleConfirm}
                 className="flex-1 py-3 rounded-xl bg-[#88fff7]/10 border border-[#88fff7]/20 text-[#88fff7] font-medium hover:bg-[#88fff7]/20 transition-colors"
               >
-                Confirm
+                {isComposer
+                  ? isWithdraw
+                    ? "Start Composer Withdrawal"
+                    : needsApproval
+                      ? "Approve & Continue"
+                      : "Start Composer Route"
+                  : isWithdraw
+                    ? "Confirm Withdrawal"
+                    : "Confirm Deposit"}
               </button>
             </div>
           </>
@@ -258,7 +274,7 @@ export function TransactionModal({
             </div>
             <h3 className="text-lg font-semibold text-white mb-2">Sign Transaction</h3>
             <p className="text-sm text-gray-400">
-              Confirm the deposit transaction in your wallet...
+              Confirm the {actionLabel} transaction in your wallet...
             </p>
           </div>
         );
@@ -271,8 +287,10 @@ export function TransactionModal({
             </div>
             <h3 className="text-lg font-semibold text-white mb-2">Processing Transaction</h3>
             <p className="text-sm text-gray-400">
-              {transaction?.is_composer
-                ? "Tracking the Composer route until the destination deposit completes..."
+              {isComposer
+                ? isWithdraw
+                  ? "Tracking the Composer route until the routed withdrawal completes..."
+                  : "Tracking the Composer route until the destination deposit completes..."
                 : "Waiting for confirmation..."}
             </p>
           </div>
@@ -286,7 +304,7 @@ export function TransactionModal({
             </div>
             <h3 className="text-lg font-semibold text-white mb-2">Transaction Successful!</h3>
             <p className="text-sm text-gray-400 mb-4">
-              Your {amount} {asset} has been deposited into {protocol}
+              Your {amount} {asset} has been {actionPastTense} {protocol}
             </p>
             {txHash && (
               <a

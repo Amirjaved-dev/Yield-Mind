@@ -24,7 +24,7 @@ function buildForwardUrl(path: string, searchParams: URLSearchParams, body?: Rec
         "8453",
     );
     const fromAddress = String(body?.walletAddress ?? body?.fromAddress ?? searchParams.get("fromAddress") ?? "");
-    const toToken = String(body?.opportunityId ?? body?.toToken ?? searchParams.get("toToken") ?? "");
+    const toToken = String(body?.toToken ?? body?.opportunityId ?? searchParams.get("toToken") ?? "");
     const fromToken = String(body?.fromToken ?? searchParams.get("fromToken") ?? "");
     const amount = String(body?.amount ?? body?.fromAmount ?? searchParams.get("fromAmount") ?? "");
 
