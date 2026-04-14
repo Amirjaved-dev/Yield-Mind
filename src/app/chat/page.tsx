@@ -14,6 +14,7 @@ import {
   Calculator,
   ChevronRight,
   ChevronDown,
+  ChevronUp,
   Check,
   Loader2,
   CircleDot,
@@ -39,11 +40,11 @@ import {
 } from "@/hooks/use-chat-storage";
 import { TransactionModal } from "@/components/TransactionModal";
 import { VaultList } from "@/components/VaultList";
+import { ActionCard } from "@/components/ActionCard";
 import { 
   useTransactionFlow, 
   type DepositPreparation, 
   type WithdrawPreparation,
-  type TransactionData,
 } from "@/hooks/useTransactionFlow";
 import { MODELS, DEFAULT_MODEL, TIER_LABELS, type ModelOption } from "@/lib/models";
 
@@ -60,12 +61,18 @@ type AgentStep = {
   inputSummary?: string;
 };
 
+type PendingAction = {
+  type: "deposit" | "withdraw";
+  preparation: DepositPreparation | WithdrawPreparation;
+};
+
 type ChatMessage = {
   id: number;
   role: "user" | "assistant" | "system";
   content: string;
   status?: MessageStatus;
   agentSteps?: AgentStep[];
+  pendingAction?: PendingAction;
 };
 
 const QUICK_ACTIONS = [
@@ -256,11 +263,19 @@ function AgentProgressPanel({ steps }: { steps: AgentStep[] }) {
   const allDone = steps.every((s) => s.status === "done");
   const hasError = steps.some((s) => s.status === "error");
   const completedCount = steps.filter((s) => s.status === "done").length;
+  const [isExpanded, setIsExpanded] = useState(!allDone);
+
+  useEffect(() => {
+    if (!allDone && !hasError) setIsExpanded(true);
+  }, [allDone, hasError]);
 
   return (
     <div className="w-full max-w-2xl">
       <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] overflow-hidden">
-        <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-white/[0.04] bg-white/[0.015]">
+        <div
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="flex items-center gap-2.5 px-4 py-2.5 border-b border-white/[0.04] bg-white/[0.015] cursor-pointer select-none hover:bg-white/[0.025] transition-colors"
+        >
           <div className="relative flex items-center justify-center h-4 w-4">
             {!allDone && !hasError && (
               <span className="absolute inset-0 rounded-full bg-[#88fff7]/30 animate-ping" style={{ animationDuration: "1.5s" }} />
@@ -283,90 +298,106 @@ function AgentProgressPanel({ steps }: { steps: AgentStep[] }) {
             <span className="text-[10px] tabular-nums text-white/20">{completedCount}/{steps.length}</span>
             {!allDone && (
               <div className="h-1 w-12 rounded-full bg-white/[0.06] overflow-hidden">
-                <div 
+                <div
                   className="h-full rounded-full bg-gradient-to-r from-[#88fff7]/40 to-[#88fff7]/10 transition-all duration-500"
                   style={{ width: `${(completedCount / steps.length) * 100}%` }}
                 />
               </div>
             )}
+            {isExpanded ? (
+              <ChevronUp size={14} className="text-white/20 transition-transform duration-200" />
+            ) : (
+              <ChevronDown size={14} className="text-white/20 transition-transform duration-200" />
+            )}
           </div>
         </div>
 
-        <div className="px-3 py-2 space-y-px">
-          {steps.map((step, idx) => {
-            const isLast = idx === steps.length - 1;
-            const isActive = step.status === "active";
-            const isDone = step.status === "done";
-            const isError = step.status === "error";
+        <div className={cn(
+          "transition-all duration-200",
+          isExpanded ? "max-h-[280px] overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent" : "max-h-0 overflow-hidden"
+        )}>
+          <div className="px-3 py-2 space-y-px">
+            {steps.map((step, idx) => {
+              const isLast = idx === steps.length - 1;
+              const isActive = step.status === "active";
+              const isDone = step.status === "done";
+              const isError = step.status === "error";
 
-            return (
-              <div key={step.id} className={cn(
-                "group relative flex items-start gap-2.5 py-1.5 px-2 rounded-lg transition-colors",
-                isActive && "bg-[#88fff7]/[0.03]",
-              )}>
-                <div className="flex flex-col items-center pt-0.5">
-                  <div className={cn(
-                    "flex items-center justify-center h-4 w-4 rounded-full shrink-0 transition-all duration-300",
-                    isDone && "bg-emerald-500/15",
-                    isError && "bg-red-500/15",
-                    isActive && "bg-[#88fff7]/15 ring-1 ring-[#88fff7]/20",
-                    (!isDone && !isError && !isActive) && "bg-white/[0.04]",
-                  )}>
-                    {isDone ? (
-                      <Check size={9} strokeWidth={2.5} className="text-emerald-400/70" />
-                    ) : isError ? (
-                      <span className="text-[8px] font-bold text-red-400/80">!</span>
-                    ) : (
-                      <StepIcon name={step.icon} size={9} className={cn(isActive ? "text-[#88fff7]" : "text-white/25")} />
-                    )}
-                  </div>
-                  {!isLast && (
+              return (
+                <div key={step.id} className={cn(
+                  "group relative flex items-start gap-2.5 py-1.5 px-2 rounded-lg transition-colors",
+                  isActive && "bg-[#88fff7]/[0.03]",
+                )}>
+                  <div className="flex flex-col items-center pt-0.5">
                     <div className={cn(
-                      "w-px min-h-[14px] mt-1 transition-colors",
-                      isDone ? "bg-emerald-500/15" : "bg-white/[0.04]"
-                    )} />
-                  )}
-                </div>
-
-                <div className="flex-1 min-w-0 pt-px">
-                  <div className="flex items-center gap-1.5">
-                    <span className={cn(
-                      "text-[11px] leading-tight font-medium truncate transition-all",
-                      isActive && "text-white/85",
-                      isDone && "text-white/35",
-                      isError && "text-red-400/60",
-                      (!isDone && !isError && !isActive) && "text-white/25",
+                      "flex items-center justify-center h-4 w-4 rounded-full shrink-0 transition-all duration-300",
+                      isDone && "bg-emerald-500/15",
+                      isError && "bg-red-500/15",
+                      isActive && "bg-[#88fff7]/15 ring-1 ring-[#88fff7]/20",
+                      (!isDone && !isError && !isActive) && "bg-white/[0.04]",
                     )}>
-                      {step.label}
-                    </span>
-                    {isActive && (
-                      <Loader2 size={9} className="text-[#88fff7]/50 animate-spin shrink-0" />
-                    )}
-                    {isDone && step.durationMs != null && (
-                      <span className="text-[9px] text-white/15 shrink-0 tabular-nums">{(step.durationMs / 1000).toFixed(1)}s</span>
-                    )}
-                  </div>
-                  
-                  {(step.inputSummary || (isDone && step.summary)) && (
-                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                      {step.inputSummary && (
-                        <span className="inline-flex items-center gap-1 text-[9px] text-white/20 max-w-[200px] truncate">
-                          <Wallet size={7} className="shrink-0 opacity-50" />
-                          {step.inputSummary}
-                        </span>
-                      )}
-                      {isDone && step.summary && (
-                        <span className="inline-flex items-center gap-1 text-[9px] text-emerald-400/35 max-w-[220px] truncate">
-                          <Check size={7} className="shrink-0" />
-                          {step.summary}
-                        </span>
+                      {isDone ? (
+                        <Check size={9} strokeWidth={2.5} className="text-emerald-400/70" />
+                      ) : isError ? (
+                        <span className="text-[8px] font-bold text-red-400/80">!</span>
+                      ) : (
+                        <StepIcon name={step.icon} size={9} className={cn(isActive ? "text-[#88fff7]" : "text-white/25")} />
                       )}
                     </div>
-                  )}
+                    {!isLast && (
+                      <div className={cn(
+                        "w-px min-h-[14px] mt-1 transition-colors",
+                        isDone ? "bg-emerald-500/15" : "bg-white/[0.04]"
+                      )} />
+                    )}
+                  </div>
+
+                  <div className="flex-1 min-w-0 pt-px">
+                    <div className="flex items-center gap-1.5">
+                      <span className={cn(
+                        "text-[11px] leading-tight font-medium truncate transition-all",
+                        isActive && "text-white/85",
+                        isDone && "text-white/35",
+                        isError && "text-red-400/60",
+                        (!isDone && !isError && !isActive) && "text-white/25",
+                      )}>
+                        {step.label}
+                      </span>
+                      {isActive && (
+                        <Loader2 size={9} className="text-[#88fff7]/50 animate-spin shrink-0" />
+                      )}
+                      {isDone && step.durationMs != null && (
+                        <span className="text-[9px] text-white/15 shrink-0 tabular-nums">{(step.durationMs / 1000).toFixed(1)}s</span>
+                      )}
+                    </div>
+
+                    {(step.inputSummary || (isDone && step.summary) || (isError && step.summary)) && (
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        {step.inputSummary && (
+                          <span className="inline-flex items-center gap-1 text-[9px] text-white/20 max-w-[200px] truncate">
+                            <Wallet size={7} className="shrink-0 opacity-50" />
+                            {step.inputSummary}
+                          </span>
+                        )}
+                        {isDone && step.summary && (
+                          <span className="inline-flex items-center gap-1 text-[9px] text-emerald-400/35 max-w-[220px] truncate">
+                            <Check size={7} className="shrink-0" />
+                            {step.summary}
+                          </span>
+                        )}
+                        {isError && step.summary && (
+                          <span className="inline-flex items-center gap-1 text-[9px] text-red-400/50 max-w-[260px] truncate">
+                            <span className="text-[8px] font-bold">!</span>
+                            {step.summary}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>
@@ -376,9 +407,11 @@ function AgentProgressPanel({ steps }: { steps: AgentStep[] }) {
 function MessageBubble({
   message,
   onRetry,
+  onActionConfirm,
 }: {
   message: ChatMessage;
   onRetry?: () => void;
+  onActionConfirm?: (prep: DepositPreparation | WithdrawPreparation, type: "deposit" | "withdraw") => Promise<void>;
 }) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
@@ -386,7 +419,7 @@ function MessageBubble({
   const isStreaming = message.status === "streaming" && message.content.length > 0;
   const isDone = message.status === "done";
 
-  if (isThinking) return null;
+  if (isThinking || (!isDone && !isUser && !isSystem)) return null;
 
   return (
     <div
@@ -406,7 +439,7 @@ function MessageBubble({
         className={cn(
           "max-w-2xl rounded-2xl px-5 py-4 shadow-sm transition-all",
           isUser && "bg-[#0d1e1d]/60 border border-white/6 text-gray-100",
-          !isUser && !isSystem && "bg-[#091615]/60 border border-white/6 text-gray-200/90",
+          !isUser && !isSystem && "text-gray-200/90",
           isSystem && "border border-[#f59e0b]/20 bg-[#f59e0b]/8 text-amber-100",
         )}
       >
@@ -431,6 +464,15 @@ function MessageBubble({
           <button onClick={onRetry} className="mt-3 text-xs font-medium text-[#f59e0b] transition-colors hover:text-[#f59e0b]/80">
             Try again
           </button>
+        )}
+        {message.pendingAction && onActionConfirm && message.status !== "error" && (
+          <div className="mt-3">
+            <ActionCard
+              type={message.pendingAction.type}
+              preparation={message.pendingAction.preparation}
+              onConfirm={onActionConfirm}
+            />
+          </div>
         )}
       </div>
     </div>
@@ -980,10 +1022,16 @@ export default function ChatPage() {
     }
 
     try {
+      const recentHistory = messages
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .slice(-10)
+        .map((m) => ({ role: m.role, content: m.content }))
+        .filter((m) => m.content && m.content.length > 0);
+
       const response = await fetch("/api/agent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ goal: prompt, wallet_address: address, model: selectedModel }),
+        body: JSON.stringify({ goal: prompt, wallet_address: address, model: selectedModel, chat_history: recentHistory }),
         signal: controller.signal,
       });
 
@@ -1066,6 +1114,25 @@ export default function ChatPage() {
                 flushContent();
                 updateAssistant({ content: (data.message as string) || "An error occurred.", status: "error" as const });
                 break;
+              case "transaction_ready": {
+                const txType = data.type as "deposit" | "withdraw";
+                const prep = data.preparation as DepositPreparation | WithdrawPreparation;
+                setPendingTx(prep);
+                setTxType(txType);
+                setTxModalOpen(true);
+                break;
+              }
+              case "action_required": {
+                const actionType = data.type as "deposit" | "withdraw";
+                const actionPrep = data.preparation as DepositPreparation | WithdrawPreparation;
+                updateAssistant({
+                  pendingAction: {
+                    type: actionType,
+                    preparation: actionPrep,
+                  },
+                });
+                break;
+              }
             }
             eventType = "";
           }
@@ -1185,6 +1252,20 @@ export default function ChatPage() {
     }
   }, [pendingTx, txType, executeDeposit, executeWithdraw]);
 
+  const handleActionConfirm = useCallback(async (
+    prep: DepositPreparation | WithdrawPreparation,
+    actionType: "deposit" | "withdraw",
+  ) => {
+    setPendingTx(prep);
+    setTxType(actionType);
+    
+    if (actionType === "deposit") {
+      await executeDeposit(prep as DepositPreparation);
+    } else {
+      await executeWithdraw(prep as WithdrawPreparation);
+    }
+  }, [executeDeposit, executeWithdraw]);
+
   const getTransactionModalProps = useCallback(() => {
     if (!pendingTx) return null;
     
@@ -1273,7 +1354,11 @@ export default function ChatPage() {
                         <AgentProgressPanel steps={message.agentSteps} />
                       </div>
                     )}
-                    <MessageBubble message={message} onRetry={message.status === "error" ? handleRetry : undefined} />
+                    <MessageBubble 
+                      message={message} 
+                      onRetry={message.status === "error" ? handleRetry : undefined}
+                      onActionConfirm={message.pendingAction ? handleActionConfirm : undefined}
+                    />
                   </div>
                 ))}
                 {hasActiveProgress && (

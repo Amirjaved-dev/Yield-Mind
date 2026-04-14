@@ -12,8 +12,7 @@ const CHAINS = [
   { id: 8453, name: "Base", symbol: "BASE", color: "#0052FF", testnet: false },
   { id: 137, name: "Polygon", symbol: "MATIC", color: "#8247E5", testnet: false },
   { id: 43114, name: "Avalanche", symbol: "AVAX", color: "#E84142", testnet: false },
-  { id: 56, name: "BNB Chain", symbol: "BNB", color: "#F0B90B", testnet: false },
-  { id: 11155111, name: "Sepolia", symbol: "ETH", color: "#627EEA", testnet: true },
+  { id: 56, name: "BNB Chain", symbol: "BNB", color: "#F3BA2F", testnet: false },
 ];
 
 interface ChainSelectorProps {

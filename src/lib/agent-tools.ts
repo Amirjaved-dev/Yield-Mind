@@ -2,21 +2,58 @@ export const tools = [
   {
     type: "function",
     function: {
+      name: "get_portfolio_summary",
+      description:
+        "Returns wallet's complete portfolio in one call: all token balances with USD values, all DeFi positions, total value, chains, and protocols. Use this instead of calling check_balance and get_positions separately.",
+      parameters: {
+        type: "object",
+        properties: {
+          wallet_address: {
+            type: "string",
+            description: "User's wallet address (0x...)",
+          },
+          chain: {
+            type: "string",
+            description: "Chain to query (default: base)",
+          },
+        },
+        required: ["wallet_address"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_market_overview",
+      description:
+        "Returns current market snapshot: ETH price, Base gas costs, and top DeFi yield opportunities. Use for quick market context or when user asks about current conditions.",
+      parameters: {
+        type: "object",
+        properties: {
+          asset: {
+            type: "string",
+            description: "Filter opportunities by asset (USDC, ETH, WBTC, etc.)",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "check_balance",
       description:
-        "MANDATORY FIRST STEP before any deposit. Checks user's token balance on a specific chain. Returns exact balance, USD value, and whether sufficient for planned transaction. Always call this before suggesting or preparing deposits.",
+        "Returns token balance, USD value, and decimals for a specific token on a chain.",
       parameters: {
         type: "object",
         properties: {
           chain: {
             type: "string",
-            description:
-              "Blockchain network: ethereum, arbitrum, optimism, base, polygon, avalanche, bnb, solana",
+            description: "Blockchain network (e.g., base)",
           },
           token: {
             type: "string",
-            description:
-              "Token symbol (USDC, USDT, ETH, WETH, WBTC, etc.) or contract address",
+            description: "Token symbol (USDC, USDT, ETH, WETH, WBTC, etc.) or contract address",
           },
           wallet_address: {
             type: "string",
@@ -32,7 +69,7 @@ export const tools = [
     function: {
       name: "check_approval",
       description:
-        "Checks if token is approved for spending by a protocol. Call before prepare_deposit to determine if approval transaction is needed. Returns current allowance and approval requirement status.",
+        "Returns whether a token is approved for spending by a given protocol contract address, and the current allowance amount.",
       parameters: {
         type: "object",
         properties: {
@@ -50,8 +87,7 @@ export const tools = [
           },
           spender: {
             type: "string",
-            description:
-              "Protocol contract address that needs approval (e.g., Aave pool, Compound comptroller)",
+            description: "Protocol contract address that needs approval",
           },
         },
         required: ["chain", "token", "wallet_address", "spender"],
@@ -63,24 +99,21 @@ export const tools = [
     function: {
       name: "discover_opportunities",
       description:
-        "CORE DISCOVERY TOOL. Scans DeFi protocols to find yield opportunities. Use for any yield discovery, comparison, or optimization request. Returns pools with APY, TVL, risk metrics, and protocol details. Supports filtering by chain, asset, protocol, risk level, and sorting options.",
+        "Returns ALL DeFi yield opportunities matching your filters in a SINGLE call. Each result includes protocol, APY, TVL, risk_level, pool_address, and asset. Results are Base-only by default. IMPORTANT: Call this ONCE without an asset filter to get all opportunities across all assets (USDC, ETH, WBTC, etc). Do NOT call this multiple times for different assets — one call returns everything.",
       parameters: {
         type: "object",
         properties: {
           chain: {
             type: "string",
-            description:
-              "Filter by blockchain: ethereum, arbitrum, optimism, base, polygon, avalanche, bnb, solana. Omit for cross-chain scan.",
+            description: "Filter by blockchain (default: base)",
           },
           asset: {
             type: "string",
-            description:
-              "Filter by asset symbol (USDC, ETH, WETH, WBTC, stETH, etc.)",
+            description: "Filter by asset symbol (USDC, ETH, WETH, WBTC, stETH, etc.)",
           },
           protocol: {
             type: "string",
-            description:
-              "Filter by protocol: aave, compound, uniswap, curve, lido, rocket-pool, gmx, yearn, convex, aura, euler, morpho",
+            description: "Filter by protocol: aave, compound, uniswap, curve, lido, yearn, euler, morpho",
           },
           min_apy: {
             type: "number",
@@ -94,12 +127,11 @@ export const tools = [
           sort_by: {
             type: "string",
             enum: ["apy", "tvl", "risk"],
-            description:
-              "Sort results: apy (highest first), tvl (largest first), risk (lowest first)",
+            description: "Sort: apy (highest first), tvl (largest first), risk (lowest first)",
           },
           limit: {
             type: "number",
-            description: "Maximum results to return (default: 20, max: 50)",
+            description: "Maximum results (default: 20, max: 50)",
           },
         },
       },
@@ -110,7 +142,7 @@ export const tools = [
     function: {
       name: "get_positions",
       description:
-        "RETRIEVES USER'S DEFI POSITIONS. Essential for portfolio analysis, withdrawal planning, and avoiding duplicate positions. Returns all yield positions across protocols with values, APYs, and PnL. Always call before recommending new positions to assess portfolio composition.",
+        "Returns user's DeFi positions across protocols (Aave V3, Compound V3, LI.FI, Lido) with values, APYs, and position IDs. Each position has format: {protocol, asset, deposited, current_value, entry_apy, position_id, chain}.",
       parameters: {
         type: "object",
         properties: {
@@ -120,17 +152,12 @@ export const tools = [
           },
           chain: {
             type: "string",
-            description: "Filter by specific chain (optional)",
+            description: "Filter by chain (default: queries all chains)",
           },
           protocols: {
             type: "array",
             items: { type: "string" },
-            description:
-              "Filter by protocols: ['aave', 'compound', 'lido', 'uniswap', etc.]",
-          },
-          include_history: {
-            type: "boolean",
-            description: "Include transaction history for each position",
+            description: "Filter by protocols: ['aave', 'compound', 'lido', 'uniswap', etc.]",
           },
         },
         required: ["wallet_address"],
@@ -142,7 +169,7 @@ export const tools = [
     function: {
       name: "get_quote",
       description:
-        "Gets detailed quote for deposit/withdrawal action. Returns expected amounts, slippage, price impact, and execution details. Use when user specifies exact amounts for precise planning.",
+        "Returns deposit or withdrawal quote with expected amounts, slippage, price impact, gas cost, and execution details.",
       parameters: {
         type: "object",
         properties: {
@@ -153,7 +180,7 @@ export const tools = [
           },
           amount: {
             type: "string",
-            description: "Amount to deposit/withdraw in human format (e.g., '1000')",
+            description: "Amount in human format (e.g., '1000')",
           },
           asset: {
             type: "string",
@@ -161,11 +188,11 @@ export const tools = [
           },
           pool_address: {
             type: "string",
-            description: "Target pool contract address",
+            description: "Target pool contract address or LI.FI opportunity ID",
           },
           chain: {
             type: "string",
-            description: "Blockchain network",
+            description: "Blockchain network (default: base)",
           },
           slippage_tolerance: {
             type: "string",
@@ -181,7 +208,7 @@ export const tools = [
     function: {
       name: "analyze_risk",
       description:
-        "CRITICAL RISK ASSESSMENT. Analyzes risk profile of positions or portfolio. Evaluates: smart contract risk, protocol concentration, oracle dependency, liquidation risk, impermanent loss exposure. Returns risk score (0-100) with detailed breakdown. Always use before recommending new positions.",
+        "Returns risk score (0-100) with 6-dimension breakdown for given positions. Dimensions: smart_contract, impermanent_loss, liquidation, concentration, market, chain_diversity. Accepts positions in format: [{protocol, asset, amount, chain}].",
       parameters: {
         type: "object",
         properties: {
@@ -190,29 +217,19 @@ export const tools = [
             items: {
               type: "object",
               properties: {
-                protocol: { type: "string" },
-                asset: { type: "string" },
-                amount: { type: "string" },
-                chain: { type: "string" },
-                pool_address: { type: "string" },
+                protocol: { type: "string", description: "Protocol name (e.g., 'Aave V3', 'Compound V3')" },
+                asset: { type: "string", description: "Asset symbol (e.g., 'USDC', 'ETH')" },
+                amount: { type: "string", description: "Amount deposited (e.g., '1000')" },
+                chain: { type: "string", description: "Chain name (e.g., 'base')" },
               },
+              required: ["protocol", "asset"],
             },
-            description:
-              "Positions to analyze. Each position: { protocol, asset, amount, chain, pool_address? }",
+            description: "Positions to analyze",
           },
           time_horizon: {
             type: "string",
             enum: ["short", "medium", "long"],
-            description:
-              "Investment horizon: short (<1 week), medium (<3 months), long (>3 months)",
-          },
-          include_oracle_risk: {
-            type: "boolean",
-            description: "Include oracle manipulation risk analysis",
-          },
-          check_onchain: {
-            type: "boolean",
-            description: "Verify positions on-chain for additional security",
+            description: "Investment horizon",
           },
         },
       },
@@ -223,18 +240,13 @@ export const tools = [
     function: {
       name: "get_token_price",
       description:
-        "Gets current USD price for any token. Use for: portfolio valuation, calculating transaction values, comparing opportunities. Supports major tokens and chain-specific tokens.",
+        "Returns current USD price and 24h change for a token.",
       parameters: {
         type: "object",
         properties: {
           token: {
             type: "string",
             description: "Token symbol (ETH, USDC, WBTC, stETH, etc.) or address",
-          },
-          chain: {
-            type: "string",
-            description:
-              "Blockchain network. Required if using token address instead of symbol.",
           },
         },
         required: ["token"],
@@ -246,22 +258,17 @@ export const tools = [
     function: {
       name: "get_protocol_info",
       description:
-        "DETAILED PROTOCOL INTELLIGENCE. Returns: security audits, TVL history, supported chains, risk assessments, team info, governance details, historical incidents. ESSENTIAL before recommending any protocol. Use to assess protocol safety and reliability.",
+        "Returns protocol details: security audits, TVL, supported chains, hack history, risk score, and description.",
       parameters: {
         type: "object",
         properties: {
           protocol: {
             type: "string",
-            description:
-              "Protocol name: aave, compound, uniswap, curve, lido, gmx, yearn, euler, morpho, rocket-pool, etc.",
+            description: "Protocol name: aave, compound, uniswap, curve, lido, gmx, yearn, euler, morpho",
           },
           include_audits: {
             type: "boolean",
             description: "Include detailed security audit information",
-          },
-          include_tvl_history: {
-            type: "boolean",
-            description: "Include TVL history and trends",
           },
         },
         required: ["protocol"],
@@ -273,13 +280,13 @@ export const tools = [
     function: {
       name: "get_gas_estimate",
       description:
-        "Estimates gas costs for transactions. Use before any deposit/withdrawal to calculate total costs. Returns gas price in gwei and estimated USD cost. Essential for cost-benefit analysis of yield opportunities.",
+        "Returns current gas price in gwei and estimated USD cost for a specific action type.",
       parameters: {
         type: "object",
         properties: {
           chain: {
             type: "string",
-            description: "Blockchain network",
+            description: "Blockchain network (default: base)",
           },
           action: {
             type: "string",
@@ -296,14 +303,13 @@ export const tools = [
     function: {
       name: "prepare_deposit",
       description:
-        "PREPARES DEPOSIT TRANSACTION. Returns transaction preview with: estimated APY, gas costs, approval requirements, and transaction data. MUST call this before execute_deposit. Shows user exactly what will happen. STOP after this and await user confirmation.",
+        "Builds deposit transaction data for wallet signing. Returns: transaction preview, estimated APY, gas costs, approval requirements. For Aave/Compound: pass protocol name only. For LI.FI vaults: pass opportunity_id. For other vaults: pass pool_address. After success, UI shows inline confirm button automatically.",
       parameters: {
         type: "object",
         properties: {
           protocol: {
             type: "string",
-            description:
-              "Target protocol: aave, aave-v3, compound, compound-v3, euler, morpho, yearn, or any LI.FI vault name",
+            description: "Target protocol: aave, aave-v3, compound, compound-v3, euler, morpho, yearn, or vault name",
           },
           asset: {
             type: "string",
@@ -311,11 +317,11 @@ export const tools = [
           },
           amount: {
             type: "string",
-            description: "Amount to deposit in human format (e.g., '1000' for 1000 USDC)",
+            description: "Amount in human format (e.g., '1000')",
           },
           chain: {
             type: "string",
-            description: "Blockchain network",
+            description: "Blockchain network (default: base)",
           },
           wallet_address: {
             type: "string",
@@ -323,7 +329,11 @@ export const tools = [
           },
           opportunity_id: {
             type: "string",
-            description: "LI.FI opportunity ID from discover_opportunities — enables LI.FI Earn integration with proper tx data",
+            description: "LI.FI opportunity ID from discover_opportunities for Base Earn vaults",
+          },
+          pool_address: {
+            type: "string",
+            description: "Vault contract address (0x...) for non-aave/compound protocols",
           },
         },
         required: ["protocol", "asset", "amount", "chain", "wallet_address"],
@@ -335,19 +345,17 @@ export const tools = [
     function: {
       name: "prepare_withdraw",
       description:
-        "PREPARES WITHDRAWAL TRANSACTION. Returns withdrawal preview with amounts, gas costs, and transaction data. MUST call before execute_withdraw. Shows user exactly what will be withdrawn. STOP after this and await user confirmation.",
+        "Builds withdrawal transaction data for wallet signing. Returns: withdrawal preview, gas costs, and current position value. After success, UI shows inline confirm button automatically.",
       parameters: {
         type: "object",
         properties: {
           position_id: {
             type: "string",
-            description:
-              "Position identifier (format: 'protocol-chain-asset', e.g., 'aave-v3-arbitrum-usdc')",
+            description: "Position identifier. Formats: 'protocol-chain-asset' (e.g., 'aave-v3-base-usdc') for Aave/Compound, or 'chainId:protocol:asset' (e.g., '8453:morpho-v1:USDC') for LI.FI/Morpho positions.",
           },
           amount: {
             type: "string",
-            description:
-              "Amount to withdraw in human format. Use 'max' for full withdrawal.",
+            description: "Amount to withdraw in human format. Use 'max' for full withdrawal.",
           },
           wallet_address: {
             type: "string",
@@ -361,9 +369,9 @@ export const tools = [
   {
     type: "function",
     function: {
-      name: "execute_deposit",
+      name: "build_transaction_deposit",
       description:
-        "EXECUTES DEPOSIT TRANSACTION. ONLY call after: 1) check_balance verified funds, 2) prepare_deposit shown preview, 3) user explicitly confirmed. Returns transaction data for wallet signing. user_confirmation MUST be true.",
+        "Final step for deposits. Passes prepared transaction data to the UI for wallet signing. Only call after prepare_deposit succeeds and user has confirmed. user_confirmation MUST be true.",
       parameters: {
         type: "object",
         properties: {
@@ -389,12 +397,11 @@ export const tools = [
           },
           user_confirmation: {
             type: "boolean",
-            description:
-              "MUST be true. Indicates user has seen preview and explicitly confirmed this exact transaction.",
+            description: "MUST be true. User has seen preview and confirmed.",
           },
           opportunity_id: {
             type: "string",
-            description: "LI.FI opportunity ID — enables LI.FI Earn integration with proper tx data",
+            description: "LI.FI opportunity ID if applicable",
           },
         },
         required: [
@@ -411,15 +418,15 @@ export const tools = [
   {
     type: "function",
     function: {
-      name: "execute_withdraw",
+      name: "build_transaction_withdraw",
       description:
-        "EXECUTES WITHDRAWAL TRANSACTION. ONLY call after: 1) prepare_withdraw shown preview, 2) user explicitly confirmed. Returns transaction data for wallet signing. user_confirmation MUST be true.",
+        "Final step for withdrawals. Passes prepared transaction data to the UI for wallet signing. Only call after prepare_withdraw succeeds and user has confirmed. user_confirmation MUST be true.",
       parameters: {
         type: "object",
         properties: {
           position_id: {
             type: "string",
-            description: "Position identifier to withdraw from",
+            description: "Position identifier to withdraw from. Supports all protocols: Aave, Compound, Morpho, YO Protocol, and any LI.FI-integrated vault.",
           },
           amount: {
             type: "string",
@@ -431,8 +438,7 @@ export const tools = [
           },
           user_confirmation: {
             type: "boolean",
-            description:
-              "MUST be true. Indicates user has seen preview and explicitly confirmed.",
+            description: "MUST be true. User has seen preview and confirmed.",
           },
         },
         required: ["position_id", "amount", "wallet_address", "user_confirmation"],

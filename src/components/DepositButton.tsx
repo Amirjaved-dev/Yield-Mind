@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useWriteContract, useWaitForTransactionReceipt } from "wagmi";
+import { useAccount, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
 import { parseUnits } from "viem";
 
 const AAVE_POOL_ABI = [
@@ -40,6 +40,7 @@ export function DepositButton({
   protocol,
   onDeposited,
 }: DepositButtonProps) {
+  const { address } = useAccount();
   const [state, setState] = useState<DepositState>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -69,7 +70,7 @@ export function DepositButton({
           address: poolAddress,
           abi: AAVE_POOL_ABI,
           functionName: "supply",
-          args: [tokenAddress, parsedAmount, /* onBehalfOf: */ null as unknown as `0x${string}`, 0],
+          args: [tokenAddress, parsedAmount, address || "0x0000000000000000000000000000000000000000", 0],
         },
         {
           onError: (err) => {

@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 
 const PREFERRED_CHAIN_KEY = "yieldmind_preferred_chain";
 
-const DEFAULT_CHAIN = 42161; // Arbitrum
+const DEFAULT_CHAIN = 8453; // Base
 
 export function usePreferredChain() {
   const [preferredChain, setPreferredChainState] = useState<number | null>(null);

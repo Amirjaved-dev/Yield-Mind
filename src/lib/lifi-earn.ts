@@ -1,4 +1,29 @@
-const LIFI_BASE = "https://api.li.fi/v1";
+const LIFI_PROXY_BASE = "/api/lifi-proxy";
+
+function getAppOrigin(): string {
+  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL;
+  if (process.env.APP_URL) return process.env.APP_URL;
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  return `http://localhost:${process.env.PORT || 3000}`;
+}
+
+function buildProxyUrl(path: string, params?: URLSearchParams): string {
+  const url = new URL(LIFI_PROXY_BASE, getAppOrigin());
+  url.searchParams.set("path", path);
+  params?.forEach((value, key) => {
+    url.searchParams.set(key, value);
+  });
+  return url.toString();
+}
+
+export function isLifiConfigured(): boolean {
+  const id = process.env.LIFI_INTEGRATOR_ID;
+  return !!(id && !id.startsWith("YOUR_") && id !== "your_lifi_integrator_id_here");
+}
+
+export function isLifiBackendEnabled(): boolean {
+  return isLifiConfigured();
+}
 
 function getIntegratorId(): string {
   const id = process.env.LIFI_INTEGRATOR_ID;
@@ -6,6 +31,10 @@ function getIntegratorId(): string {
     throw new Error("LIFI_INTEGRATOR_ID not configured");
   }
   return id;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export interface LifiOpportunity {
@@ -25,6 +54,7 @@ export interface LifiOpportunity {
 
 export interface LifiQuoteRequest {
   chainId: number;
+  destinationChainId?: number;
   opportunityId: string;
   fromToken: string;
   amount: string;
@@ -62,6 +92,24 @@ export interface LifiQuoteResponse {
     protocol: string;
     apy: number;
   };
+  fromChainId: number;
+  toChainId: number;
+  tool?: string;
+}
+
+export interface LifiStatusResponse {
+  status: string;
+  substatus?: string;
+  substatusMessage?: string;
+  transactionId?: string;
+  lifiExplorerLink?: string;
+  sending?: {
+    txHash?: string;
+  };
+  receiving?: {
+    txHash?: string;
+  };
+  tool?: string;
 }
 
 export interface LifiPosition {
@@ -84,95 +132,215 @@ export async function lifiDiscoverOpportunities(params?: {
   minApy?: number;
   limit?: number;
 }): Promise<{ opportunities: LifiOpportunity[]; totalCount: number }> {
-  const integratorId = getIntegratorId();
+  if (!isLifiBackendEnabled()) {
+    throw new Error("LI.FI backend is disabled");
+  }
+
+  if (params?.chainId && params.chainId !== 8453) {
+    throw new Error("LI.FI backend is Base-only");
+  }
 
   const searchParams = new URLSearchParams({
-    integratorId,
+    chainId: "8453",
+    asset: params?.tokenSymbol || "USDC",
+    sortBy: "apy",
   });
 
-  if (params?.chainId) searchParams.set("chainId", String(params.chainId));
-  if (params?.tokenSymbol) searchParams.set("tokenSymbol", params.tokenSymbol);
-  if (params?.minApy) searchParams.set("minApy", String(params.minApy));
   if (params?.limit) searchParams.set("limit", String(params.limit));
 
-  const res = await fetch(`${LIFI_BASE}/opportunities?${searchParams.toString()}`, {
-    headers: {
-      Accept: "application/json",
-      "x-lifi-integrator": integratorId,
-    },
-    next: { revalidate: 60 },
-  });
+  const requestUrl = buildProxyUrl("earn/vaults", searchParams);
+
+  let res: Response;
+  try {
+    res = await fetch(requestUrl, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (fetchErr) {
+    const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+    throw new Error(`LI.FI opportunities unreachable: ${msg}`);
+  }
 
   if (!res.ok) {
     throw new Error(`LI.FI opportunities error: ${res.status}`);
   }
 
   const json = await res.json();
-  const rawOpps: Record<string, unknown>[] = json.opportunities || json.data || [];
+  const rawOpps: Record<string, unknown>[] = json.data || json.opportunities || [];
 
-  const opportunities: LifiOpportunity[] = rawOpps.map((opp: Record<string, unknown>) => ({
-    id: (opp.id as string) || "",
-    name: (opp.name as string) || (opp.protocol as string) || "Unknown Vault",
-    protocol: (opp.protocol as string) || "Unknown",
-    chainId: opp.chainId as number || 1,
-    chainName: (opp.chainName as string) || "Ethereum",
-    tokenAddress: (opp.tokenAddress as string) || (opp.asset as string) || "",
-    tokenSymbol: (opp.tokenSymbol as string) || (opp.symbol as string) || "Unknown",
-    tokenDecimals: (opp.tokenDecimals as number) || 18,
-    apy: (opp.apy as number) ?? 0,
-    tvlUsd: (opp.tvlUsd as number) || (opp.tvl as number) || 0,
-    riskLevel: ((opp.riskLevel as string) || "medium").toLowerCase() as LifiOpportunity["riskLevel"],
-    tags: opp.tags as string[] | undefined,
-  }));
+  const opportunities: LifiOpportunity[] = rawOpps.map((opp: Record<string, unknown>) => {
+    const lpToken = Array.isArray(opp.lpTokens) ? (opp.lpTokens[0] as Record<string, unknown> | undefined) : undefined;
+    const protocolData = isRecord(opp.protocol) ? opp.protocol : null;
+    const analytics = isRecord(opp.analytics) ? opp.analytics : null;
+    const apyData = analytics && isRecord(analytics.apy) ? analytics.apy : null;
+    const tvlData = analytics && isRecord(analytics.tvl) ? analytics.tvl : null;
+
+    return {
+      id: String(lpToken?.address || opp.address || ""),
+      name: String(opp.name || protocolData?.name || "Unknown Vault"),
+      protocol: String(protocolData?.name || opp.protocol || "Unknown"),
+      chainId: Number(opp.chainId || 8453),
+      chainName: String(opp.network || "Base"),
+      tokenAddress: String(lpToken?.address || opp.address || ""),
+      tokenSymbol: String(lpToken?.symbol || opp.asset || "Unknown"),
+      tokenDecimals: Number(lpToken?.decimals || 18),
+      apy: Number(apyData?.total ?? 0),
+      tvlUsd: Number(tvlData?.usd ?? 0),
+      riskLevel: "medium",
+      tags: Array.isArray(opp.tags) ? (opp.tags as string[]) : undefined,
+    };
+  });
+
+  const filteredOpportunities = params?.minApy ? opportunities.filter((opp) => opp.apy >= params.minApy!) : opportunities;
 
   return {
-    opportunities,
-    totalCount: json.totalCount || opportunities.length,
+    opportunities: filteredOpportunities,
+    totalCount: json.total || json.totalCount || filteredOpportunities.length,
   };
 }
 
 export async function lifiGetQuote(request: LifiQuoteRequest): Promise<LifiQuoteResponse> {
+  if (!isLifiBackendEnabled()) {
+    throw new Error("LI.FI backend is disabled");
+  }
+
+  const toChainId = request.destinationChainId ?? 8453;
+
+  if (!request.chainId || !toChainId) {
+    throw new Error("LI.FI quote requires source and destination chain IDs");
+  }
+
   const integratorId = getIntegratorId();
 
-  const res = await fetch(`${LIFI_BASE}/earn/quote`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      "x-lifi-integrator": integratorId,
-    },
-    body: JSON.stringify({
-      ...request,
-      integratorId,
-      slippage: request.slippage ?? 0.005,
-    }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(buildProxyUrl("quote"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        ...request,
+        destinationChainId: toChainId,
+        integratorId,
+        slippage: request.slippage ?? 0.005,
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (fetchErr) {
+    const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+    throw new Error(`LI.FI quote unreachable: ${msg}`);
+  }
 
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
     throw new Error(`LI.FI quote error ${res.status}: ${errText}`);
   }
 
-  return res.json();
+  const json = await res.json();
+  const transactionRequest = json.transactionRequest || json.transaction || {};
+  const estimate = json.estimate || {};
+  const protocol = json.protocol || json.opportunity?.protocol || "Unknown";
+
+  return {
+    transaction: {
+      to: transactionRequest.to || transactionRequest.target || "",
+      data: transactionRequest.data || "0x",
+      value: transactionRequest.value || "0",
+      gasLimit: transactionRequest.gasLimit,
+      gasPrice: transactionRequest.gasPrice,
+    },
+    approval: estimate.approvalAddress
+      ? {
+          to: estimate.approvalAddress,
+          data: "0x",
+          value: "0",
+          tokenAddress: request.fromToken,
+          spender: estimate.approvalAddress,
+          amount: request.amount,
+        }
+      : undefined,
+    expectedApy: Number(json.expectedApy ?? estimate.expectedApy ?? 0),
+    fee: json.fee
+      ? {
+          amount: String(json.fee.amount ?? "0"),
+          token: String(json.fee.token ?? ""),
+          usdValue: String(json.fee.usdValue ?? "0"),
+        }
+      : undefined,
+    estimatedGasCostUsd: estimate.gasCostUsd || estimate.estimatedGasCostUsd || json.estimatedGasCostUsd,
+    priceImpact: estimate.priceImpact || json.priceImpact,
+    validForSeconds: Number(json.validForSeconds ?? estimate.validForSeconds ?? 30),
+    opportunity: {
+      id: request.opportunityId,
+      protocol,
+      apy: Number(json.expectedApy ?? estimate.expectedApy ?? 0),
+    },
+    fromChainId: request.chainId,
+    toChainId,
+    tool: typeof json.tool === "string" ? json.tool : undefined,
+  };
+}
+
+export async function lifiGetStatus(params: {
+  txHash: string;
+  fromChainId?: number;
+  toChainId?: number;
+}): Promise<LifiStatusResponse> {
+  if (!isLifiBackendEnabled()) {
+    throw new Error("LI.FI backend is disabled");
+  }
+
+  getIntegratorId();
+
+  const searchParams = new URLSearchParams({ txHash: params.txHash });
+  if (params.fromChainId) searchParams.set("fromChain", String(params.fromChainId));
+  if (params.toChainId) searchParams.set("toChain", String(params.toChainId));
+
+  let res: Response;
+  try {
+    res = await fetch(buildProxyUrl("status", searchParams), {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (fetchErr) {
+    const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+    throw new Error(`LI.FI status unreachable: ${msg}`);
+  }
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`LI.FI status error ${res.status}: ${errText}`);
+  }
+
+  return await res.json();
 }
 
 export async function lifiGetPositions(walletAddress: string): Promise<{
   positions: LifiPosition[];
   totalValueUsd: string;
 }> {
-  const integratorId = getIntegratorId();
+  if (!isLifiBackendEnabled()) {
+    throw new Error("LI.FI backend is disabled");
+  }
 
-  const searchParams = new URLSearchParams({
-    walletAddress: walletAddress.toLowerCase(),
-    integratorId,
-  });
+  getIntegratorId();
 
-  const res = await fetch(`${LIFI_BASE}/positions?${searchParams.toString()}`, {
-    headers: {
-      Accept: "application/json",
-      "x-lifi-integrator": integratorId,
-    },
-  });
+  const requestUrl = buildProxyUrl(`earn/portfolio/${encodeURIComponent(walletAddress.toLowerCase())}/positions`);
+
+  let res: Response;
+  try {
+    res = await fetch(requestUrl, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (fetchErr) {
+    const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+    throw new Error(`LI.FI positions unreachable: ${msg}`);
+  }
 
   if (!res.ok) {
     throw new Error(`LI.FI positions error: ${res.status}`);
@@ -182,21 +350,23 @@ export async function lifiGetPositions(walletAddress: string): Promise<{
   const rawPositions: Record<string, unknown>[] = json.positions || [];
 
   const positions: LifiPosition[] = rawPositions.map((pos: Record<string, unknown>) => ({
-    id: (pos.id as string) || "",
-    opportunityId: (pos.opportunityId as string) || "",
-    protocol: (pos.protocol as string) || "Unknown",
-    chainId: pos.chainId as number || 1,
-    chainName: (pos.chainName as string) || "Ethereum",
-    tokenSymbol: (pos.tokenSymbol as string) || (pos.symbol as string) || "Unknown",
-    depositedAmount: (pos.depositedAmount as string) || (pos.amount as string) || "0",
-    depositedAmountUsd: (pos.depositedAmountUsd as string) || (pos.amountUsd as string) || "$0.00",
-    currentApy: (pos.currentApy as number) || (pos.apy as number) || 0,
-    entryTime: (pos.entryTime as string) || new Date().toISOString(),
-    status: ((pos.status as string) || "active").toLowerCase() as LifiPosition["status"],
+    id: `${String(pos.chainId || "0")}:${String(pos.protocolName || "unknown")}:${String(pos.asset && isRecord(pos.asset) ? pos.asset.symbol : pos.id || "position")}`,
+    opportunityId: String(pos.asset && isRecord(pos.asset) ? pos.asset.address || "" : ""),
+    protocol: String(pos.protocolName || "Unknown"),
+    chainId: Number(pos.chainId || 1),
+    chainName: String(pos.chainId === 8453 ? "Base" : pos.chainId === 1 ? "Ethereum" : "Unknown"),
+    tokenSymbol: String(pos.asset && isRecord(pos.asset) ? pos.asset.symbol || "Unknown" : pos.symbol || "Unknown"),
+    depositedAmount: String(pos.balanceNative || pos.amount || "0"),
+    depositedAmountUsd: String(pos.balanceUsd || pos.amountUsd || "$0.00"),
+    currentApy: Number(pos.currentApy || pos.apy || 0),
+    entryTime: new Date().toISOString(),
+    status: "active",
   }));
 
   return {
     positions,
-    totalValueUsd: json.totalValueUsd || "$0.00",
+    totalValueUsd: positions
+      .reduce((sum, position) => sum + (Number.parseFloat(position.depositedAmountUsd.replace(/[^0-9.\-]/g, "")) || 0), 0)
+      .toFixed(2),
   };
 }

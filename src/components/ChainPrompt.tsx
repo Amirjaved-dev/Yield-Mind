@@ -7,12 +7,7 @@ import { cn } from "@/lib/utils";
 import { showToast } from "@/lib/toast";
 
 const CHAINS = [
-  { id: 1, name: "Ethereum", symbol: "ETH", color: "#627EEA", gas: "High", gasCost: "~$5-50" },
-  { id: 42161, name: "Arbitrum", symbol: "ARB", color: "#28A0F0", gas: "Low", gasCost: "~$0.10" },
-  { id: 10, name: "Optimism", symbol: "OP", color: "#FF0420", gas: "Low", gasCost: "~$0.10" },
   { id: 8453, name: "Base", symbol: "BASE", color: "#0052FF", gas: "Low", gasCost: "~$0.05" },
-  { id: 137, name: "Polygon", symbol: "MATIC", color: "#8247E5", gas: "Very Low", gasCost: "~$0.01" },
-  { id: 43114, name: "Avalanche", symbol: "AVAX", color: "#E84142", gas: "Low", gasCost: "~$0.10" },
 ];
 
 interface ChainPromptProps {
@@ -22,14 +17,14 @@ interface ChainPromptProps {
 }
 
 export function ChainPrompt({ isOpen, onClose, onSelect }: ChainPromptProps) {
-  const [selectedChain, setSelectedChain] = useState<number>(42161);
+  const [selectedChain, setSelectedChain] = useState<number>(8453);
   const [showTestnets, setShowTestnets] = useState(false);
   const { isConnected } = useAccount();
   const { switchChain, isPending } = useSwitchChain();
 
   useEffect(() => {
     if (isOpen) {
-      setSelectedChain(42161);
+      setSelectedChain(8453);
     }
   }, [isOpen]);
 

@@ -11,6 +11,7 @@ interface TransactionData {
   data: `0x${string}`;
   value: bigint;
   chain_id: number;
+  destination_chain_id?: number;
   gas_estimate: string;
   gas_cost_usd: string;
   description: string;
@@ -18,6 +19,7 @@ interface TransactionData {
   action: "approve" | "deposit" | "withdraw";
   asset: string;
   amount: string;
+  is_composer?: boolean;
 }
 
 interface TransactionModalProps {
@@ -27,10 +29,10 @@ interface TransactionModalProps {
   transaction?: TransactionData;
   approvalTransaction?: TransactionData;
   needsApproval?: boolean;
-  protocol: string;
-  chain: string;
-  asset: string;
-  amount: string;
+  protocol?: string;
+  chain?: string;
+  asset?: string;
+  amount?: string;
   estimatedApy?: string;
   riskLevel?: string;
 }
@@ -43,6 +45,16 @@ const CHAIN_NAMES: Record<number, string> = {
   137: "Polygon",
   43114: "Avalanche",
   56: "BNB Chain",
+};
+
+const BLOCK_EXPLORERS: Record<number, string> = {
+  1: "https://etherscan.io/tx/",
+  42161: "https://arbiscan.io/tx/",
+  10: "https://optimistic.etherscan.io/tx/",
+  8453: "https://basescan.org/tx/",
+  137: "https://polygonscan.com/tx/",
+  43114: "https://snowtrace.io/tx/",
+  56: "https://bscscan.com/tx/",
 };
 
 const RISK_CONFIG = {
@@ -70,17 +82,21 @@ export function TransactionModal({
   const [txHash, setTxHash] = useState<string | null>(null);
 
   useEffect(() => {
-    if (isOpen) {
+    if (!isOpen) return;
+    queueMicrotask(() => {
       setStep("preview");
       setError(null);
       setTxHash(null);
-    }
+    });
   }, [isOpen]);
 
   if (!isOpen) return null;
 
   const risk = RISK_CONFIG[riskLevel as keyof typeof RISK_CONFIG] || RISK_CONFIG.medium;
-  const chainName = transaction?.chain_id ? CHAIN_NAMES[transaction.chain_id] : chain;
+  const chainName = transaction?.chain_id ? CHAIN_NAMES[transaction.chain_id] : chain || "Unknown";
+  const destinationChainName = transaction?.destination_chain_id
+    ? CHAIN_NAMES[transaction.destination_chain_id]
+    : null;
 
   const handleConfirm = async () => {
     setError(null);
@@ -109,19 +125,21 @@ export function TransactionModal({
               <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-sm text-gray-400">Protocol</span>
-                  <span className="font-medium text-white">{protocol}</span>
+                      <span className="font-medium text-white">{protocol || "Unknown"}</span>
                 </div>
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-sm text-gray-400">Network</span>
-                  <span className="font-medium text-white">{chainName}</span>
+                  <span className="font-medium text-white">
+                    {destinationChainName ? `${chainName} -> ${destinationChainName}` : chainName}
+                  </span>
                 </div>
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-sm text-gray-400">Asset</span>
-                  <span className="font-medium text-white">{asset}</span>
+                      <span className="font-medium text-white">{asset || "Unknown"}</span>
                 </div>
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-sm text-gray-400">Amount</span>
-                  <span className="text-lg font-bold text-[#88fff7]">{amount} {asset}</span>
+                      <span className="text-lg font-bold text-[#88fff7]">{amount || "0"} {asset || ""}</span>
                 </div>
                 {estimatedApy && (
                   <div className="flex items-center justify-between mb-3">
@@ -157,10 +175,19 @@ export function TransactionModal({
                     <div>
                       <p className="text-sm text-amber-200 font-medium">Approval Required</p>
                       <p className="text-xs text-amber-300/70 mt-0.5">
-                        You&apos;ll need to approve {asset} for {protocol} before depositing. This is a one-time transaction.
+                        You&apos;ll need to approve {asset || "this asset"} for {protocol || "this protocol"} before depositing. This is a one-time transaction.
                       </p>
                     </div>
                   </div>
+                </div>
+              )}
+
+              {transaction?.is_composer && !needsApproval && (
+                <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3">
+                  <p className="text-sm text-cyan-200 font-medium">LI.FI Composer Route</p>
+                  <p className="text-xs text-cyan-100/70 mt-0.5">
+                    Swap, bridge, and deposit steps are bundled into a single Composer transaction.
+                  </p>
                 </div>
               )}
 
@@ -244,7 +271,9 @@ export function TransactionModal({
             </div>
             <h3 className="text-lg font-semibold text-white mb-2">Processing Transaction</h3>
             <p className="text-sm text-gray-400">
-              Waiting for confirmation...
+              {transaction?.is_composer
+                ? "Tracking the Composer route until the destination deposit completes..."
+                : "Waiting for confirmation..."}
             </p>
           </div>
         );
@@ -261,7 +290,7 @@ export function TransactionModal({
             </p>
             {txHash && (
               <a
-                href={`https://etherscan.io/tx/${txHash}`}
+                href={`${BLOCK_EXPLORERS[transaction?.chain_id || 1] || BLOCK_EXPLORERS[1]}${txHash}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 text-sm text-[#88fff7] hover:underline"

@@ -1,29 +1,20 @@
 import { NextResponse } from "next/server";
+import { isLifiBackendEnabled } from "@/lib/lifi-earn";
 
-export async function GET() {
-  const integratorId = process.env.LIFI_INTEGRATOR_ID;
-
-  if (!integratorId || integratorId === "your_lifi_integrator_id_here") {
-    return NextResponse.json(
-      { error: "LIFI_INTEGRATOR_ID not configured" },
-      { status: 500 },
-    );
+export async function GET(req: Request) {
+  if (!isLifiBackendEnabled()) {
+    return NextResponse.json({ opportunities: [], totalCount: 0 });
   }
 
   try {
     const params = new URLSearchParams({
-      integratorId,
+      chainId: "8453",
+      asset: "USDC",
+      sortBy: "apy",
     });
 
-    const res = await fetch(
-      `https://api.li.fi/v1/opportunities?${params.toString()}`,
-      {
-        headers: {
-          Accept: "application/json",
-          "x-lifi-integrator": integratorId,
-        },
-      },
-    );
+    const proxyUrl = new URL(`/api/lifi-proxy?path=earn/vaults&${params.toString()}`, req.url);
+    const res = await fetch(proxyUrl, { headers: { Accept: "application/json" } });
 
     if (!res.ok) {
       return NextResponse.json(
@@ -34,7 +25,7 @@ export async function GET() {
 
     const data = await res.json();
     return NextResponse.json(data);
-  } catch (error) {
+  } catch {
     return NextResponse.json(
       { error: "Failed to fetch opportunities" },
       { status: 500 },

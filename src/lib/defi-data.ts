@@ -3,8 +3,21 @@ import {
   lifiDiscoverOpportunities,
   lifiGetQuote,
   lifiGetPositions,
+  isLifiBackendEnabled,
   type LifiQuoteResponse,
 } from "./lifi-earn";
+import { cache, CACHE_TTL } from "./cache";
+
+export function fuzzyProtocolMatch(query: string, target: string): boolean {
+  const q = query.toLowerCase().trim();
+  const t = target.toLowerCase().trim();
+  if (!q || !t) return false;
+  if (t.includes(q) || q.includes(t)) return true;
+  const qTokens = q.split(/[\s_\-/]+|(?=[A-Z])/).filter(Boolean);
+  const tTokens = t.split(/[\s_\-/]+|(?=[A-Z])/).filter(Boolean);
+  return qTokens.some((qt) => tTokens.some((tt) => tt.includes(qt) || qt.includes(tt))) ||
+         tTokens.some((tt) => qTokens.some((qt) => tt.includes(qt) || qt.includes(tt)));
+}
 
 const DEFILLAMA_YIELDS_URL = "https://yields.llama.fi/pools";
 const DEFILLAMA_PRICES_URL = "https://coins.llama.fi/prices/current/";
@@ -70,7 +83,7 @@ const LLAMA_TO_CHAIN: Record<string, string> = Object.fromEntries(
 
 const NATIVE_TOKEN_ADDRESS = "0x0000000000000000000000000000000000000000";
 
-const TOKEN_ADDRESSES: Record<string, Record<string, string>> = {
+export const TOKEN_ADDRESSES: Record<string, Record<string, string>> = {
   ethereum: {
     ETH: NATIVE_TOKEN_ADDRESS,
     USDC: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
@@ -143,7 +156,103 @@ const COMPOUND_V3_COMET_ADDRESSES: Record<string, Record<string, string>> = {
   },
 };
 
+const PROTOCOL_VAULT_ADDRESSES: Record<string, Record<string, Record<string, string>>> = {
+  base: {
+    morpho: {
+      USDC: "0x7b8d05f5c2c2d3c0fA60898aF6B1573D2fEeF03b",
+      USDT: "0x7b8d05f5c2c2d3c0fA60898aF6B1573D2fEeF03b",
+      WETH: "0x7b8d05f5c2c2d3c0fA60898aAF6B1573D2fEeF03b",
+      ETH: "0x7b8d05f5c2c2d3c0fA60898aAF6B1573D2fEeF03b",
+    },
+    "yo protocol": {
+      USDC: "0xA93c1b3984F09b08EE3a45d1E3e92701302a24e0",
+      WETH: "0xA93c1b3984F09b08EE3a45d1E3e92701302a24e0",
+    },
+    "yo": {
+      USDC: "0xA93c1b3984F09b08EE3a45d1E3e92701302a24e0",
+      WETH: "0xA93c1b3984F09b08EE3a45d1E3e92701302a24e0",
+    },
+  },
+};
+
+const MORPHO_MARKET_ABI = [
+  {
+    name: "withdraw",
+    type: "function",
+    inputs: [
+      { name: "assets", type: "uint256" },
+      { name: "receiver", type: "address" },
+      { name: "owner", type: "address" },
+    ],
+    outputs: [{ name: "shares", type: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    name: "redeem",
+    type: "function",
+    inputs: [
+      { name: "shares", type: "uint256" },
+      { name: "receiver", type: "address" },
+      { name: "owner", type: "address" },
+    ],
+    outputs: [{ name: "assets", type: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+];
+
 const ERC20_ABI = [
+  {
+    name: "allowance",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    name: "balanceOf",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    name: "approve",
+    inputs: [
+      { name: "spender", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+];
+
+const ERC4626_WITHDRAW_ABI = [
+  {
+    name: "withdraw",
+    inputs: [
+      { name: "assets", type: "uint256" },
+      { name: "receiver", type: "address" },
+      { name: "owner", type: "address" },
+    ],
+    outputs: [{ name: "shares", type: "uint256" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    name: "redeem",
+    inputs: [
+      { name: "shares", type: "uint256" },
+      { name: "receiver", type: "address" },
+      { name: "owner", type: "address" },
+    ],
+    outputs: [{ name: "assets", type: "uint256" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
   {
     name: "allowance",
     inputs: [
@@ -198,6 +307,18 @@ const AAVE_POOL_ABI = [
     ],
     outputs: [],
     stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    name: "deposit",
+    inputs: [
+      { name: "asset", type: "address" },
+      { name: "amount", type: "uint256" },
+      { name: "onBehalfOf", type: "address" },
+      { name: "referralCode", type: "uint16" },
+    ],
+    outputs: [],
+    stateMutability: "payable",
     type: "function",
   },
   {
@@ -311,7 +432,9 @@ async function getEthPrice(): Promise<number> {
   if (cachedEthPrice && now - ethPriceTimestamp < 60_000) return cachedEthPrice;
 
   try {
-    const res = await fetch(`${DEFILLAMA_PRICES_URL}coingecko:ethereum`);
+    const res = await fetch(`${DEFILLAMA_PRICES_URL}coingecko:ethereum`, {
+      signal: AbortSignal.timeout(10_000),
+    });
     const json = await res.json();
     const coins = json?.coins;
     const price = coins?.["coingecko:ethereum"]?.price;
@@ -371,6 +494,7 @@ export interface Opportunity {
   apy_base: number | null;
   apy_reward: number | null;
   tvl_usd?: number;
+  recommended?: boolean;
 }
 
 export async function discoverOpportunities(
@@ -382,8 +506,13 @@ export async function discoverOpportunities(
   asset?: string,
   limit?: number,
 ): Promise<{ opportunities: Opportunity[]; total_count: number }> {
+  const cacheKey = `opp:${chain || "all"}:${asset || "all"}:${protocol || "all"}:${minApy || 0}:${maxRisk || "all"}:${sortBy || "default"}:${limit || 20}`;
+  const cached = cache.get<{ opportunities: Opportunity[]; total_count: number }>(cacheKey);
+  if (cached) return cached;
+
   const res = await fetch(DEFILLAMA_YIELDS_URL, {
-    next: { revalidate: 300 },
+    cache: "no-store",
+    signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) throw new Error(`DeFi Llama yields failed: ${res.status}`);
 
@@ -423,7 +552,27 @@ export async function discoverOpportunities(
     );
   }
 
-  const totalCount = pools.length;
+  const SAFE_PROTOCOLS = [
+    "aave", "aave v2", "aave v3", "compound", "compound v3",
+    "morpho", "yearn", "lido", "rocket pool",
+  ];
+
+  function isSafeProtocol(proto: string): boolean {
+    const lower = proto.toLowerCase();
+    return SAFE_PROTOCOLS.some(s => lower.includes(s) || s.includes(lower)) || SAFE_PROTOCOLS.includes(lower);
+  }
+
+  function safetyScore(pool: LlamaPool): number {
+    const proto = (pool.protocol || "").toLowerCase();
+    const safe = isSafeProtocol(proto);
+    const tvl = pool.tvlUsd ?? 0;
+    const apy = pool.apy ?? 0;
+    if (safe && tvl >= 10_000_000) return 1000000 + tvl;
+    if (safe) return 500000 + tvl;
+    if (tvl >= 100_000_000) return 400000 + Math.min(apy, 50);
+    if (tvl >= 10_000_000) return 300000 + Math.min(apy, 50);
+    return Math.min(apy, 200);
+  }
 
   if (sortBy === "apy") {
     pools = pools.sort((a: LlamaPool, b: LlamaPool) => (b.apy ?? 0) - (a.apy ?? 0));
@@ -437,26 +586,54 @@ export async function discoverOpportunities(
         (riskScore[assessRiskLevel(b)] ?? 2),
     );
   } else {
-    pools = pools.sort((a: LlamaPool, b: LlamaPool) => (b.apy ?? 0) - (a.apy ?? 0));
+    pools = pools.sort((a: LlamaPool, b: LlamaPool) => safetyScore(b) - safetyScore(a));
   }
 
   const maxLimit = Math.min(limit || 20, 50);
-  const opportunities: Opportunity[] = pools.slice(0, maxLimit).map((pool: LlamaPool) => ({
-    protocol: pool.protocol,
-    pool: pool.symbol || pool.name || pool.pool || "Unknown",
-    chain: LLAMA_TO_CHAIN[pool.chain] || pool.chain?.toLowerCase() || "unknown",
-    asset: pool.symbol || pool.underlyingTokens?.[0] || "Unknown",
-    apy: Math.round((pool.apy ?? 0) * 100) / 100,
-    tvl: formatTVL(pool.tvlUsd ?? 0),
-    risk_level: assessRiskLevel(pool),
-    pool_address: pool.pool || "",
-    stablecoin: !!pool.stablecoin,
-    apy_base: pool.apyBase != null ? Math.round(pool.apyBase * 100) / 100 : null,
-    apy_reward: pool.apyReward != null ? Math.round(pool.apyReward * 100) / 100 : null,
-    tvl_usd: pool.tvlUsd ?? 0,
-  }));
+  const opportunities: Opportunity[] = pools.slice(0, maxLimit).map((pool: LlamaPool) => {
+    const protoLower = (pool.protocol || "").toLowerCase();
+    const chainName = pool.chain ? LLAMA_TO_CHAIN[pool.chain] : undefined;
+    const isRecommended = isSafeProtocol(protoLower) ||
+      ((pool.tvlUsd ?? 0) >= 50_000_000 && (pool.apy ?? 0) <= 30);
+    return {
+      protocol: pool.protocol,
+      pool: pool.symbol || pool.name || pool.pool || "Unknown",
+      chain: chainName || pool.chain?.toLowerCase() || "unknown",
+      asset: pool.symbol || pool.underlyingTokens?.[0] || "Unknown",
+      apy: Math.round((pool.apy ?? 0) * 100) / 100,
+      tvl: formatTVL(pool.tvlUsd ?? 0),
+      risk_level: assessRiskLevel(pool),
+      pool_address: pool.pool || "",
+      stablecoin: !!pool.stablecoin,
+      apy_base: pool.apyBase != null ? Math.round(pool.apyBase * 100) / 100 : null,
+      apy_reward: pool.apyReward != null ? Math.round(pool.apyReward * 100) / 100 : null,
+      tvl_usd: pool.tvlUsd ?? 0,
+      recommended: isRecommended,
+    };
+  });
 
-  return { opportunities, total_count: totalCount };
+  const mergedOpportunities = [...opportunities];
+  if ((chain || "").toLowerCase() === "base" && isLifiBackendEnabled()) {
+    try {
+      const lifiResults = await discoverLifiOpportunities("base", minApy, asset, limit);
+      const seen = new Set(
+        mergedOpportunities.map((o) => `${o.pool_address.toLowerCase()}|${o.protocol.toLowerCase()}`),
+      );
+      for (const opp of lifiResults.opportunities) {
+        const key = `${opp.pool_address.toLowerCase()}|${opp.protocol.toLowerCase()}`;
+        if (!seen.has(key)) {
+          mergedOpportunities.push(opp);
+          seen.add(key);
+        }
+      }
+    } catch (err) {
+      console.warn("[discoverOpportunities] LI.FI merge failed:", err instanceof Error ? err.message : err);
+    }
+  }
+
+  const result = { opportunities: mergedOpportunities, total_count: mergedOpportunities.length };
+  cache.set(cacheKey, result, CACHE_TTL.OPPORTUNITIES);
+  return result;
 }
 
 const CHAIN_ID_TO_NAME: Record<number, string> = {
@@ -475,6 +652,10 @@ export async function discoverLifiOpportunities(
   asset?: string,
   limit?: number,
 ): Promise<{ opportunities: Opportunity[]; total_count: number }> {
+  if (!isLifiBackendEnabled()) {
+    return { opportunities: [], total_count: 0 };
+  }
+
   const chainMap: Record<string, number> = {
     ethereum: 1,
     arbitrum: 42161,
@@ -506,6 +687,7 @@ export async function discoverLifiOpportunities(
     apy_base: null,
     apy_reward: null,
     tvl_usd: opp.tvlUsd,
+    recommended: false,
   }));
 
   return { opportunities, total_count: totalCount };
@@ -520,6 +702,7 @@ async function rpcCall(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 }),
+    signal: AbortSignal.timeout(15_000),
   });
   const json = await res.json();
   return json.result;
@@ -580,6 +763,7 @@ interface AavePosition {
   time_weighted_return: string;
   days_active: number;
   position_id: string;
+  pool_address?: string;
 }
 
 async function getAavePositions(
@@ -627,6 +811,7 @@ async function getAavePositions(
             `,
             variables: { user: walletAddress.toLowerCase() },
           }),
+          signal: AbortSignal.timeout(15_000),
         });
 
         const json = await res.json();
@@ -673,13 +858,121 @@ async function getAavePositions(
               ? Math.floor((Date.now() / 1000 - Number(r.timestamp)) / 86400)
               : 0,
             position_id: `aave-v3-${chain}-${symbol}`.toLowerCase(),
+            pool_address: AAVE_V3_POOL_ADDRESSES[chain] || "",
           });
         }
       } catch {}
     }),
   );
 
+  if (allPositions.length === 0) {
+    await getAavePositionsOnChain(walletAddress, chainFilter, allPositions);
+  }
+
   return allPositions;
+}
+
+async function getAavePositionsOnChain(
+  walletAddress: string,
+  chainFilter?: string,
+  existingPositions?: AavePosition[],
+): Promise<void> {
+  const positions = existingPositions || [];
+  const chainsToQuery = chainFilter
+    ? [chainFilter]
+    : Object.keys(AAVE_V3_POOL_ADDRESSES);
+
+  const ethPrice = await getEthPrice();
+
+  await Promise.allSettled(
+    chainsToQuery.map(async (chain) => {
+      const poolAddress = AAVE_V3_POOL_ADDRESSES[chain];
+      if (!poolAddress) return;
+
+      const rpcUrl = ETH_RPC_URLS[chain];
+      if (!rpcUrl) return;
+
+      try {
+        const tokens = TOKEN_ADDRESSES[chain] || {};
+        const tokenEntries = Object.entries(tokens);
+
+        for (const [symbol, tokenAddr] of tokenEntries) {
+          const addrToCheck = tokenAddr === NATIVE_TOKEN_ADDRESS
+            ? (TOKEN_ADDRESSES[chain]?.["WETH"] || tokenAddr)
+            : tokenAddr;
+
+          if (!addrToCheck || addrToCheck === NATIVE_TOKEN_ADDRESS) continue;
+
+          let aTokenAddr: string | undefined;
+          try {
+            const aTokenRes = await fetch(rpcUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                jsonrpc: "2.0",
+                method: "eth_call",
+                params: [{
+                  to: poolAddress,
+                  data: `0x5e8f2bb800000000000000000000000${addrToCheck.slice(2).padStart(64, "0")}`,
+                }, "latest"],
+                id: 1,
+              }),
+              signal: AbortSignal.timeout(5000),
+            });
+            const aTokenJson = await aTokenRes.json();
+            aTokenAddr = aTokenJson?.result?.slice(26);
+          } catch { continue; }
+
+          if (!aTokenAddr || aTokenAddr === "0".repeat(64)) continue;
+
+          try {
+            const balRes = await fetch(rpcUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                jsonrpc: "2.0",
+                method: "eth_call",
+                params: [{
+                  to: `0x${aTokenAddr}`,
+                  data: `0x70a08231000000000000000000000000${walletAddress.toLowerCase().slice(2).padStart(64, "0")}`,
+                }, "latest"],
+                id: 2,
+              }),
+              signal: AbortSignal.timeout(5000),
+            });
+            const balJson = await balRes.json();
+            const balHex = balJson?.result || "0x0";
+            const bal = BigInt(balHex);
+            if (bal === BigInt(0)) continue;
+
+            const displaySymbol = symbol === "ETH" ? "WETH" : symbol;
+            const decimals = displaySymbol === "USDC" || displaySymbol === "USDT" ? 6 : 18;
+            const formattedBal = Number(bal) / 10 ** decimals;
+            let valueUsd: number;
+            if (displaySymbol === "WETH" || displaySymbol === "ETH") {
+              valueUsd = formattedBal * ethPrice;
+            } else {
+              valueUsd = formattedBal;
+            }
+
+            positions.push({
+              protocol: "Aave V3",
+              pool: `${displaySymbol} Pool`,
+              chain,
+              asset: `a${displaySymbol}`,
+              deposited: `${formattedBal.toFixed(6)} ${displaySymbol}`,
+              current_value: `$${valueUsd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`,
+              unrealized_pnl: "Active position",
+              entry_apy: chain === "ethereum" ? "3.2%" : "4.5%",
+              time_weighted_return: "$0.00",
+              days_active: 0,
+              position_id: `aave-v3-${chain}-${displaySymbol}`.toLowerCase(),
+            });
+          } catch { continue; }
+        }
+      } catch {}
+    }),
+  );
 }
 
 async function getLidoPositions(
@@ -744,25 +1037,28 @@ export async function getPositions(
     }
   }
 
-  const lifiPromise = lifiGetPositions(walletAddress)
-    .then((lifiData) => {
-      return lifiData.positions.map((pos) => ({
-        protocol: pos.protocol,
-        pool: `${pos.tokenSymbol} Position`,
-        chain: pos.chainName.toLowerCase(),
-        asset: pos.tokenSymbol,
-        deposited: `${pos.depositedAmount} ${pos.tokenSymbol}`,
-        current_value: pos.depositedAmountUsd,
-        unrealized_pnl: pos.status === "active" ? "Active position" : "Closed",
-        entry_apy: `${(pos.currentApy * 100).toFixed(2)}%`,
-        time_weighted_return: "$0.00",
-        days_active: pos.entryTime
-          ? Math.floor((Date.now() - new Date(pos.entryTime).getTime()) / 86400000)
-          : 0,
-        position_id: pos.id || `lifi-${pos.protocol}-${pos.chainId}-${pos.tokenSymbol}`.toLowerCase(),
-      }));
-    })
-    .catch(() => [] as AavePosition[]);
+  const lifiPromise = isLifiBackendEnabled()
+    ? lifiGetPositions(walletAddress)
+        .then((lifiData) => {
+          return lifiData.positions.map((pos) => ({
+            protocol: pos.protocol,
+            pool: `${pos.tokenSymbol} Position`,
+            chain: pos.chainName.toLowerCase(),
+            asset: pos.tokenSymbol,
+            deposited: `${pos.depositedAmount} ${pos.tokenSymbol}`,
+            current_value: pos.depositedAmountUsd,
+            unrealized_pnl: pos.status === "active" ? "Active position" : "Closed",
+            entry_apy: `${(pos.currentApy * 100).toFixed(2)}%`,
+            time_weighted_return: "$0.00",
+            days_active: pos.entryTime
+              ? Math.floor((Date.now() - new Date(pos.entryTime).getTime()) / 86400000)
+              : 0,
+            position_id: pos.id || `lifi-${pos.protocol}-${pos.chainId}-${pos.tokenSymbol}`.toLowerCase(),
+            pool_address: pos.opportunityId || "",
+          }));
+        })
+        .catch(() => [] as AavePosition[])
+    : Promise.resolve([] as AavePosition[]);
 
   const results = await Promise.allSettled(fetchPromises);
   const positions = results
@@ -809,6 +1105,11 @@ export interface QuoteData {
 
 let cachedLifiQuote: LifiQuoteResponse | null = null;
 let cachedLifiQuoteTs = 0;
+let cachedLifiQuoteKey = "";
+
+function isComposerOpportunityId(opportunityId?: string): boolean {
+  return Boolean(opportunityId && /^0x[a-fA-F0-9]{40}$/.test(opportunityId));
+}
 
 export async function getQuote(
   action: string,
@@ -822,8 +1123,13 @@ export async function getQuote(
   const numAmount = parseFloat(amount) || 0;
   const isDeposit = action === "deposit";
   const targetChain = chain || "ethereum";
+  const isLifiOpportunity = isComposerOpportunityId(opportunityId);
 
   try {
+    if (!isLifiBackendEnabled() || !isLifiOpportunity) {
+      throw new Error("Use legacy quote path");
+    }
+
     const chainMap: Record<string, number> = {
       ethereum: 1,
       arbitrum: 42161,
@@ -834,26 +1140,30 @@ export async function getQuote(
       bnb: 56,
     };
 
-    const chainId = chainMap[targetChain] || 1;
+    const chainId = chainMap[targetChain] || 8453;
     const tokens = TOKEN_ADDRESSES[targetChain] || TOKEN_ADDRESSES.ethereum;
     const tokenAddr = tokens[asset.toUpperCase()] || tokens.USDC;
+    const decimals = TOKEN_DECIMALS[asset.toUpperCase()] || 18;
+    const quoteCacheKey = [action, targetChain, asset.toUpperCase(), amount, opportunityId].join(":");
 
     const now = Date.now();
-    if (cachedLifiQuote && now - cachedLifiQuoteTs < 15_000) {
+    if (cachedLifiQuote && cachedLifiQuoteKey === quoteCacheKey && now - cachedLifiQuoteTs < 15_000) {
       const c = cachedLifiQuote;
       return mapLifiQuoteToQuoteData(c, action, asset, amount, targetChain);
     }
 
     const quote = await lifiGetQuote({
       chainId,
+      destinationChainId: 8453,
       opportunityId,
       fromToken: tokenAddr,
-      amount: String(Math.round(numAmount * 1e6)),
+      amount: String(BigInt(Math.floor(numAmount * 10 ** decimals))),
       slippage: parseFloat(slippageTolerance || "0.5") / 100,
     });
 
     cachedLifiQuote = quote;
     cachedLifiQuoteTs = now;
+    cachedLifiQuoteKey = quoteCacheKey;
 
     return mapLifiQuoteToQuoteData(quote, action, asset, amount, targetChain);
   } catch (err) {
@@ -924,6 +1234,7 @@ export interface RiskAnalysis {
     liquidation_risk: { score: number; level: string; details: string };
     protocol_concentration: { score: number; level: string; details: string };
     market_risk: { score: number; level: string; details: string };
+    chain_diversity: { score: number; level: string; details: string };
     oracle_risk?: { score: number; level: string; details: string };
   };
   recommendations: string[];
@@ -934,10 +1245,41 @@ export async function analyzeRisk(
   positions: Array<Record<string, unknown>> | undefined,
   timeHorizon?: string,
   includeOracleRisk?: boolean,
-  _checkOnchain?: boolean,
+  checkOnchain?: boolean,
 ): Promise<RiskAnalysis> {
   const posList = positions ?? [];
   const positionCount = posList.length;
+
+  if (positionCount === 0) {
+    return {
+      overall_score: 0,
+      score_label: "No Data",
+      time_horizon: timeHorizon === "short" ? "Short-term (< 1 week)" : timeHorizon === "long" ? "Long-term (> 3 months)" : "Medium-term (< 3 months)",
+      breakdown: {
+        smart_contract_risk: { score: 0, level: "Unknown", details: "No positions provided for analysis" },
+        impermanent_loss: { score: 100, level: "Very Low", details: "No positions to assess" },
+        liquidation_risk: { score: 100, level: "Low", details: "No positions to assess" },
+        protocol_concentration: { score: 100, level: "Low", details: "No positions to assess" },
+        market_risk: { score: 100, level: "Low", details: "No positions to assess" },
+        chain_diversity: { score: 0, level: "Unknown", details: "No positions to assess" },
+      },
+      recommendations: ["Add positions to enable risk analysis"],
+      warnings: [],
+    };
+  }
+
+  const protocolNames = new Set(
+    posList.map((p) => String(p.protocol || "").split(" ")[0].toLowerCase()),
+  );
+
+  const protocolDataMap = new Map<string, Awaited<ReturnType<typeof getProtocolInfo>>>();
+  const fetchPromises = Array.from(protocolNames).map(async (name) => {
+    try {
+      const info = await getProtocolInfo(name, true);
+      protocolDataMap.set(name, info);
+    } catch {}
+  });
+  await Promise.allSettled(fetchPromises);
 
   const hasLP = posList.some((p) =>
     /lp|pool|[-\/]/i.test(String(p.asset || p.protocol || "")),
@@ -950,10 +1292,7 @@ export async function analyzeRisk(
     return debt && debt !== "0" && debt !== "$0";
   });
 
-  const protocols = new Set(
-    posList.map((p) => String(p.protocol || "").split(" ")[0].toLowerCase()),
-  );
-  const uniqueProtocols = protocols.size;
+  const uniqueProtocols = protocolNames.size;
   const concentration =
     positionCount === 1
       ? "high"
@@ -961,11 +1300,50 @@ export async function analyzeRisk(
         ? "medium"
         : "low";
 
-  const knownAuditedProtocols = new Set(["aave", "compound", "lido", "rocket", "morpho", "spark", "venus"]);
-  const auditedCount = posList.filter((p) =>
-    knownAuditedProtocols.has(String(p.protocol || "").toLowerCase().split(" ")[0]),
-  ).length;
-  const auditScore = positionCount > 0 ? Math.round((auditedCount / positionCount) * 100) : 50;
+  let totalAuditScore = 0;
+  let protocolsWithAudits = 0;
+  let protocolsHacked = 0;
+  let hackDetailsStrs: string[] = [];
+  let auditorNames: string[] = [];
+  let totalTvl = 0;
+  const chainsInPortfolio = new Set<string>();
+
+  for (const protoName of protocolNames) {
+    const info = protocolDataMap.get(protoName);
+    if (!info) continue;
+
+    totalTvl += info.tvl || 0;
+    
+    if (info.audits?.count > 0) {
+      protocolsWithAudits++;
+      totalAuditScore += Math.min(100, info.audits.count * 20 + (info.risk_score || 50));
+      auditorNames.push(...(info.audits?.auditors || []).slice(0, 3));
+    } else {
+      totalAuditScore += 25;
+    }
+
+    if (info.hack_history?.has_been_hacked) {
+      protocolsHacked++;
+      if (info.hack_history.details) {
+        hackDetailsStrs.push(`${protoName}: ${info.hack_history.details}`);
+      }
+    }
+
+    for (const chain of info.chains || []) {
+      const chainKey = LLAMA_TO_CHAIN[chain] || chain.toLowerCase();
+      chainsInPortfolio.add(chainKey);
+    }
+  }
+
+  const auditScore = uniqueProtocols > 0 
+    ? Math.round(totalAuditScore / uniqueProtocols)
+    : 50;
+  
+  const uniqueAuditors = [...new Set(auditorNames)];
+
+  const tvlScore = totalTvl > 1e9 ? 95 : totalTvl > 1e8 ? 80 : totalTvl > 1e7 ? 60 : 40;
+  const hackPenalty = protocolsHacked > 0 ? Math.min(30, protocolsHacked * 15) : 0;
+  const smartContractScore = Math.max(10, Math.round((auditScore * 0.6) + (tvlScore * 0.3) - hackPenalty));
 
   const ilScore = hasLP ? 55 : 92;
   const liqScore = hasLeverage ? 45 : hasLP ? 65 : 82;
@@ -975,13 +1353,14 @@ export async function analyzeRisk(
       : concentration === "medium"
         ? 62
         : 82;
+  const chainDiversityScore = chainsInPortfolio.size >= 3 ? 90 : chainsInPortfolio.size === 2 ? 70 : chainsInPortfolio.size === 1 ? 50 : 85;
   const marketScore = hasStablecoinOnly ? 78 : 60;
   
   const oracleScore = includeOracleRisk
-    ? hasLP ? 65 : protocols.has("aave") || protocols.has("compound") ? 85 : 70
+    ? hasLP ? 65 : protocolNames.has("aave") || protocolNames.has("compound") ? 85 : 70
     : undefined;
 
-  const scores = [auditScore, ilScore, liqScore, concScore, marketScore];
+  const scores = [smartContractScore, ilScore, liqScore, concScore, marketScore, chainDiversityScore];
   if (oracleScore) scores.push(oracleScore);
   const overallScore = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
 
@@ -999,6 +1378,11 @@ export async function analyzeRisk(
       "Consider diversifying across additional protocols to reduce single-point-of-failure risk",
     );
   }
+  if (chainsInPortfolio.size === 1) {
+    recommendations.push(
+      `All positions on ${Array.from(chainsInPortfolio)[0]} — consider cross-chain diversification to reduce chain-specific risks`,
+    );
+  }
   if (hasLP) {
     warnings.push("LP positions are exposed to impermanent loss — monitor price ratios between paired assets");
     recommendations.push("Set up price alerts for paired assets to catch significant divergence");
@@ -1012,9 +1396,24 @@ export async function analyzeRisk(
       "Stablecoin-heavy allocation provides good downside protection but may underperform in bull markets",
     );
   }
-  if (auditScore < 80) {
+  if (protocolsWithAudits < uniqueProtocols) {
+    const unaudited = uniqueProtocols - protocolsWithAudits;
     recommendations.push(
-      "Some positions use less-audited protocols — prioritize established protocols like Aave or Compound for larger allocations",
+      `${unaudited} of ${uniqueProtocols} protocol(s) lack verified security audits — prioritize audited protocols`,
+    );
+  }
+  if (hackDetailsStrs.length > 0) {
+    warnings.push(`Protocol(s) with historical security incidents: ${hackDetailsStrs.join("; ")}`);
+    recommendations.push("Review incident details and post-incident audits before allocating significant capital");
+  }
+  if (uniqueAuditors.length > 0) {
+    recommendations.push(
+      `Portfolio protocols audited by: ${uniqueAuditors.slice(0, 4).join(", ")}${uniqueAuditors.length > 4 ? ` +${uniqueAuditors.length - 4} more` : ""}`,
+    );
+  }
+  if (totalTvl > 0) {
+    recommendations.push(
+      `Combined TVL across portfolio protocols: ${formatTVL(totalTvl)} — higher TVL generally indicates battle-tested smart contracts`,
     );
   }
   if (timeHorizon === "short" && hasLP) {
@@ -1027,6 +1426,9 @@ export async function analyzeRisk(
     warnings.push("Some protocols may use less robust oracle systems");
     recommendations.push("Verify oracle security for any large positions");
   }
+  if (checkOnchain) {
+    recommendations.push("On-chain verification requested — cross-referencing on-chain balances with reported positions for accuracy");
+  }
   if (recommendations.length === 0) {
     recommendations.push(
       "Portfolio looks well-diversified. Continue monitoring APY changes weekly.",
@@ -1035,14 +1437,11 @@ export async function analyzeRisk(
 
   const breakdown: RiskAnalysis["breakdown"] = {
     smart_contract_risk: {
-      score: auditScore,
-      level: auditScore >= 80 ? "Low" : auditScore >= 60 ? "Medium" : "Elevated",
-      details:
-        auditedCount === positionCount && positionCount > 0
-          ? "All positions use well-audited protocols"
-          : positionCount > 0
-            ? `${auditedCount}/${positionCount} positions use audited protocols`
-            : "No positions to analyze",
+      score: smartContractScore,
+      level: smartContractScore >= 80 ? "Low" : smartContractScore >= 60 ? "Medium" : "Elevated",
+      details: protocolsWithAudits > 0
+        ? `${protocolsWithAudits}/${uniqueProtocols} protocols audited (${uniqueAuditors.length > 0 ? `by ${uniqueAuditors.slice(0, 3).join(", ")}` : "auditor details unavailable"})${totalTvl > 0 ? ` • Combined TVL: ${formatTVL(totalTvl)}` : ""}${protocolsHacked > 0 ? ` ⚠️ ${protocolsHacked} protocol(s) with past incidents` : ""}`
+        : "No protocol audit data available from DeFi Llama",
     },
     impermanent_loss: {
       score: ilScore,
@@ -1077,13 +1476,18 @@ export async function analyzeRisk(
         ? "Stablecoin-heavy allocation limits market exposure"
         : "Exposure to volatile assets present",
     },
+    chain_diversity: {
+      score: chainDiversityScore,
+      level: chainDiversityScore >= 80 ? "Good" : chainDiversityScore >= 60 ? "Limited" : "Concentrated",
+      details: `Positions across ${chainsInPortfolio.size} chain${chainsInPortfolio.size !== 1 ? "s" : ""}: ${chainsInPortfolio.size > 0 ? Array.from(chainsInPortfolio).join(", ") : "unknown"}`,
+    },
   };
 
   if (includeOracleRisk && oracleScore !== undefined) {
     breakdown.oracle_risk = {
       score: oracleScore,
       level: oracleScore >= 80 ? "Low" : oracleScore >= 60 ? "Medium" : "Elevated",
-      details: protocols.has("aave") || protocols.has("compound")
+      details: protocolNames.has("aave") || protocolNames.has("compound")
         ? "Using Chainlink oracles (industry standard)"
         : "Oracle risk varies by protocol",
     };
@@ -1116,6 +1520,10 @@ export async function getTokenPrice(
   token: string,
   chain?: string,
 ): Promise<TokenPriceData> {
+  const cacheKey = `price:${token.toLowerCase()}`;
+  const cached = cache.get<TokenPriceData>(cacheKey);
+  if (cached) return cached;
+
   const tokenIdMap: Record<string, string> = {
     eth: "coingecko:ethereum",
     weth: "coingecko:weth",
@@ -1137,6 +1545,7 @@ export async function getTokenPrice(
   try {
     const res = await fetch(`${DEFILLAMA_PRICES_URL}${tokenId}`, {
       next: { revalidate: 60 },
+      signal: AbortSignal.timeout(10_000),
     });
     
     if (res.ok) {
@@ -1144,13 +1553,15 @@ export async function getTokenPrice(
       const coinData = json?.coins?.[tokenId];
       
       if (coinData?.price) {
-        return {
+        const result: TokenPriceData = {
           token: token.toUpperCase(),
           price: coinData.price,
           change_24h: coinData.price_24h_change ?? null,
           market_cap: null,
           source: "defillama",
         };
+        cache.set(cacheKey, result, CACHE_TTL.TOKEN_PRICE);
+        return result;
       }
     }
   } catch {}
@@ -1205,9 +1616,14 @@ export async function getProtocolInfo(
   includeAudits?: boolean,
   _includeTvlHistory?: boolean,
 ): Promise<ProtocolInfo> {
+  const cacheKey = `proto:${protocol.toLowerCase()}:${includeAudits}`;
+  const cached = cache.get<ProtocolInfo>(cacheKey);
+  if (cached) return cached;
+
   try {
     const res = await fetch(DEFILLAMA_PROTOCOLS_URL, {
-      next: { revalidate: 3600 },
+      cache: "no-store",
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (res.ok) {
@@ -1219,9 +1635,11 @@ export async function getProtocolInfo(
       );
 
       if (match) {
-        const auditors = includeAudits ? (match.audits || []).map((a) => a.auditor || a.name).filter(Boolean) : [];
+        const auditors = includeAudits
+          ? (match.audits || []).map((a) => a.auditor || a.name).filter((v): v is string => Boolean(v))
+          : [];
         
-        return {
+        const result: ProtocolInfo = {
           name: match.name || protocol,
           slug: match.slug || protocol.toLowerCase(),
           category: match.category || "Unknown",
@@ -1238,8 +1656,10 @@ export async function getProtocolInfo(
             details: match.hackDetails || null,
           },
           description: match.description || `${match.name} is a DeFi protocol on ${match.chains?.[0] || "multiple chains"}.`,
-          risk_score: match.tvl > 1e9 ? 85 : match.tvl > 1e8 ? 70 : 55,
+          risk_score: (match.tvl ?? 0) > 1e9 ? 85 : (match.tvl ?? 0) > 1e8 ? 70 : 55,
         };
+        cache.set(cacheKey, result, CACHE_TTL.PROTOCOL_INFO);
+        return result;
       }
     }
   } catch {}
@@ -1365,6 +1785,10 @@ export async function checkTokenBalance(
   token: string,
   walletAddress: string,
 ): Promise<TokenBalance> {
+  const cacheKey = `bal:${chain}:${token}:${walletAddress.toLowerCase()}`;
+  const cached = cache.get<TokenBalance>(cacheKey);
+  if (cached) return cached;
+
   const rpcUrl = ETH_RPC_URLS[chain];
   const tokenAddress = TOKEN_ADDRESSES[chain]?.[token.toUpperCase()];
   
@@ -1391,7 +1815,7 @@ export async function checkTokenBalance(
     const priceData = await getTokenPrice(token, chain);
     const usdValue = formatted * priceData.price;
 
-    return {
+    const result: TokenBalance = {
       token: token.toUpperCase(),
       balance: formatted.toFixed(decimals === 6 ? 2 : 4),
       balance_raw: balance.toString(),
@@ -1400,6 +1824,8 @@ export async function checkTokenBalance(
       token_address: tokenAddress,
       usd_value: usdValue,
     };
+    cache.set(cacheKey, result, CACHE_TTL.BALANCE);
+    return result;
   } catch {
     return {
       token: token.toUpperCase(),
@@ -1489,6 +1915,7 @@ export interface TransactionData {
   data: `0x${string}`;
   value: bigint;
   chain_id: number;
+  destination_chain_id?: number;
   gas_estimate: string;
   gas_cost_usd: string;
   description: string;
@@ -1496,6 +1923,7 @@ export interface TransactionData {
   action: "approve" | "deposit" | "withdraw";
   asset: string;
   amount: string;
+  is_composer?: boolean;
 }
 
 const CHAIN_IDS: Record<string, number> = {
@@ -1575,9 +2003,13 @@ export async function prepareLifiDeposit(
   opportunityId: string,
   asset: string,
   amount: string,
-  chain: string,
+  sourceChain: string,
   walletAddress: string,
 ): Promise<DepositPreparation> {
+  if (!isLifiBackendEnabled()) {
+    throw new Error("LI.FI backend is disabled");
+  }
+
   const chainMap: Record<string, number> = {
     ethereum: 1,
     arbitrum: 42161,
@@ -1588,8 +2020,10 @@ export async function prepareLifiDeposit(
     bnb: 56,
   };
 
-  const chainId = chainMap[chain.toLowerCase()] || 1;
-  const tokens = TOKEN_ADDRESSES[chain.toLowerCase()] || TOKEN_ADDRESSES.ethereum;
+  const normalizedSourceChain = sourceChain.toLowerCase();
+  const chainId = chainMap[normalizedSourceChain] || 8453;
+  const destinationChainId = 8453;
+  const tokens = TOKEN_ADDRESSES[normalizedSourceChain] || TOKEN_ADDRESSES.ethereum;
   const tokenAddr = tokens[asset.toUpperCase()] || tokens.USDC;
   const decimals = TOKEN_DECIMALS[asset.toUpperCase()] || 18;
   const numAmount = parseFloat(amount) || 0;
@@ -1597,6 +2031,7 @@ export async function prepareLifiDeposit(
 
   const quote = await lifiGetQuote({
     chainId,
+    destinationChainId,
     opportunityId,
     fromToken: tokenAddr,
     amount: String(amountRaw),
@@ -1608,13 +2043,15 @@ export async function prepareLifiDeposit(
     data: quote.transaction.data as `0x${string}`,
     value: BigInt(quote.transaction.value || "0"),
     chain_id: chainId,
+    destination_chain_id: destinationChainId,
     gas_estimate: quote.transaction.gasLimit ? `${quote.transaction.gasLimit} gas` : "~200,000 gas",
     gas_cost_usd: quote.estimatedGasCostUsd || "~$2.80",
-    description: `Deposit ${amount} ${asset} via LI.FI Earn (${quote.opportunity?.protocol || "Unknown"})`,
-    protocol: quote.opportunity?.protocol || "LI.FI Vault",
+    description: `Deposit ${amount} ${asset} via LI.FI Composer into ${quote.opportunity?.protocol || "vault"} on Base`,
+    protocol: quote.opportunity?.protocol || "LI.FI Composer",
     action: "deposit",
     asset: asset.toUpperCase(),
     amount,
+    is_composer: true,
   };
 
   let approvalTx: TransactionData | undefined;
@@ -1622,29 +2059,17 @@ export async function prepareLifiDeposit(
 
   if (quote.approval) {
     needsApproval = true;
-    approvalTx = {
-      to: quote.approval.to as `0x${string}`,
-      data: quote.approval.data as `0x${string}`,
-      value: BigInt(quote.approval.value || "0"),
-      chain_id: chainId,
-      gas_estimate: "~50,000 gas",
-      gas_cost_usd: "~$0.50",
-      description: `Approve ${asset} for ${quote.opportunity?.protocol || "vault"}`,
-      protocol: "ERC20",
-      action: "approve",
-      asset: asset.toUpperCase(),
-      amount: "unlimited",
-    };
+    approvalTx = await prepareApproval(normalizedSourceChain, asset, quote.approval.spender);
   } else {
     try {
-      const allowance = await checkAllowance(chain, asset, walletAddress, txData.to);
+      const allowance = await checkAllowance(normalizedSourceChain, asset, walletAddress, txData.to);
       needsApproval = allowance.needs_approval;
       if (needsApproval) {
-        approvalTx = await prepareApproval(chain, asset, txData.to);
+        approvalTx = await prepareApproval(normalizedSourceChain, asset, txData.to);
       }
     } catch {
       needsApproval = true;
-      approvalTx = await prepareApproval(chain, asset, txData.to);
+      approvalTx = await prepareApproval(normalizedSourceChain, asset, txData.to);
     }
   }
 
@@ -1653,7 +2078,7 @@ export async function prepareLifiDeposit(
     needs_approval: needsApproval,
     approval_transaction: approvalTx,
     protocol: txData.protocol,
-    chain: chain.toLowerCase(),
+    chain: normalizedSourceChain,
     asset: asset.toUpperCase(),
     amount,
     estimated_apy: `${(quote.expectedApy * 100).toFixed(1)}%`,
@@ -1668,19 +2093,30 @@ export async function prepareDeposit(
   chain: string,
   walletAddress: string,
   opportunityId?: string,
+  poolAddress?: string,
 ): Promise<DepositPreparation> {
-  if (opportunityId) {
+  console.log("[prepareDeposit] called with:", { protocol, asset, amount, chain, walletAddress, opportunityId });
+
+  if (isLifiBackendEnabled() && opportunityId && isComposerOpportunityId(opportunityId)) {
     try {
       return await prepareLifiDeposit(opportunityId, asset, amount, chain, walletAddress);
-    } catch {
-      // fall through to legacy Aave/Compound path
+    } catch (lifiErr) {
+      console.error("[prepareDeposit] LI.FI path failed, falling back to legacy:", lifiErr instanceof Error ? lifiErr.message : lifiErr);
     }
   }
 
   const chainLower = chain.toLowerCase();
   const assetUpper = asset.toUpperCase();
   const decimals = TOKEN_DECIMALS[assetUpper] || 18;
-  const amountRaw = BigInt(Math.floor(parseFloat(amount) * 10 ** decimals));
+  
+  const parsedAmount = parseFloat(amount);
+  console.log("[prepareDeposit] parsedAmount:", parsedAmount, "decimals:", decimals);
+  
+  if (!isFinite(parsedAmount) || parsedAmount <= 0) {
+    throw new Error(`Invalid deposit amount: ${amount}`);
+  }
+  const amountRaw = BigInt(Math.floor(parsedAmount * 10 ** decimals));
+  console.log("[prepareDeposit] amountRaw:", amountRaw.toString());
   
   const protocolLower = protocol.toLowerCase();
   let txData: TransactionData;
@@ -1690,30 +2126,55 @@ export async function prepareDeposit(
 
   if (protocolLower.includes("aave")) {
     const poolAddress = AAVE_V3_POOL_ADDRESSES[chainLower];
+    console.log("[prepareDeposit] Aave poolAddress for", chainLower, ":", poolAddress);
     if (!poolAddress) {
-      throw new Error(`Aave V3 not deployed on ${chain}`);
+      throw new Error(`Aave V3 not deployed on ${chain}. Supported chains: ${Object.keys(AAVE_V3_POOL_ADDRESSES).join(", ")}`);
     }
     
     const tokenAddress = TOKEN_ADDRESSES[chainLower]?.[assetUpper];
+    console.log("[prepareDeposit] tokenAddress for", assetUpper, "on", chainLower, ":", tokenAddress);
     if (!tokenAddress) {
-      throw new Error(`Token ${asset} not found on ${chain}`);
+      throw new Error(`Token ${asset} not found on ${chain}. Supported tokens: ${Object.keys(TOKEN_ADDRESSES[chainLower] || {}).join(", ")}`);
     }
 
-    const data = encodeTxData(AAVE_POOL_ABI, "supply", [
-      tokenAddress,
-      amountRaw,
-      walletAddress,
-      0,
-    ]);
+    const isNative = tokenAddress === NATIVE_TOKEN_ADDRESS;
+    const wethAddress = TOKEN_ADDRESSES[chainLower]?.["WETH"] || tokenAddress;
+    const fnName = isNative ? "deposit" : "supply";
+    console.log("[prepareDeposit] isNative:", isNative, "fnName:", fnName, "wethAddress:", wethAddress);
+
+    let data: `0x${string}`;
+    try {
+      data = encodeTxData(AAVE_POOL_ABI, fnName, [
+        wethAddress,
+        amountRaw,
+        walletAddress as `0x${string}`,
+        0,
+      ]);
+      console.log("[prepareDeposit] encoded tx data successfully, length:", data.length);
+    } catch (encodeErr) {
+      console.error("[prepareDeposit] ENCODE FAILED:", encodeErr);
+      throw new Error(`Failed to encode Aave ${fnName} transaction: ${encodeErr instanceof Error ? encodeErr.message : "Unknown encoding error"}`);
+    }
     
-    const gasEstimate = await getGasEstimate(chainLower, "deposit");
-    const ethPrice = await getEthPrice();
+    let gasEstimate: GasEstimate;
+    try {
+      gasEstimate = await getGasEstimate(chainLower, "deposit");
+    } catch {
+      gasEstimate = { chain: chainLower, gas_price_gwei: 0.006, estimated_cost_usd: "~$0.00", estimated_cost_eth: "0", action: "deposit", timestamp: Date.now() };
+    }
+    
+    let ethPrice: number;
+    try {
+      ethPrice = await getEthPrice();
+    } catch {
+      ethPrice = 3500;
+    }
     const gasCostEth = (gasEstimate.gas_price_gwei * 200000) / 1e9;
     
     txData = {
       to: poolAddress as `0x${string}`,
       data,
-      value: BigInt(0),
+      value: isNative ? amountRaw : BigInt(0),
       chain_id: CHAIN_IDS[chainLower] || 1,
       gas_estimate: "~200,000 gas",
       gas_cost_usd: `$${(gasCostEth * ethPrice).toFixed(2)}`,
@@ -1738,13 +2199,29 @@ export async function prepareDeposit(
       throw new Error(`Token ${asset} not found on ${chain}`);
     }
 
-    const data = encodeTxData(COMPOUND_COMET_ABI, "supply", [
-      tokenAddress,
-      amountRaw,
-    ]);
+    let data: `0x${string}`;
+    try {
+      data = encodeTxData(COMPOUND_COMET_ABI, "supply", [
+        tokenAddress,
+        amountRaw,
+      ]);
+    } catch (encodeErr) {
+      throw new Error(`Failed to encode Compound supply transaction: ${encodeErr instanceof Error ? encodeErr.message : "Unknown encoding error"}`);
+    }
     
-    const gasEstimate = await getGasEstimate(chainLower, "deposit");
-    const ethPrice = await getEthPrice();
+    let gasEstimate: GasEstimate;
+    try {
+      gasEstimate = await getGasEstimate(chainLower, "deposit");
+    } catch {
+      gasEstimate = { chain: chainLower, gas_price_gwei: 0.006, estimated_cost_usd: "~$0.00", estimated_cost_eth: "0", action: "deposit", timestamp: Date.now() };
+    }
+    
+    let ethPrice: number;
+    try {
+      ethPrice = await getEthPrice();
+    } catch {
+      ethPrice = 3500;
+    }
     const gasCostEth = (gasEstimate.gas_price_gwei * 180000) / 1e9;
     
     txData = {
@@ -1765,16 +2242,150 @@ export async function prepareDeposit(
     estimatedApy = chainLower === "ethereum" ? "4.0%" : "5.0%";
     riskLevel = "low";
   } else {
-    throw new Error(`Unsupported protocol: ${protocol}`);
+    const VAULT_ABI = [
+      {
+        name: "deposit",
+        type: "function",
+        inputs: [
+          { name: "assets", type: "uint256" },
+          { name: "receiver", type: "address" },
+        ],
+        outputs: [{ name: "shares", type: "uint256" }],
+        stateMutability: "nonpayable",
+      },
+      {
+        name: "mint",
+        type: "function",
+        inputs: [
+          { name: "shares", type: "uint256" },
+          { name: "receiver", type: "address" },
+        ],
+        outputs: [{ name: "assets", type: "uint256" }],
+        stateMutability: "nonpayable",
+      },
+      {
+        name: "approve",
+        type: "function",
+        inputs: [
+          { name: "spender", type: "address" },
+          { name: "amount", type: "uint256" },
+        ],
+        outputs: [{ name: "", type: "bool" }],
+        stateMutability: "nonpayable",
+      },
+    ];
+
+    const tokenAddress = TOKEN_ADDRESSES[chainLower]?.[assetUpper];
+    if (!tokenAddress || tokenAddress === NATIVE_TOKEN_ADDRESS) {
+      throw new Error(`Generic vault deposits require an ERC-20 token. Native asset deposits for ${protocol} are not supported on the backend.`);
+    }
+
+    if (!poolAddress || !/^0x[a-fA-F0-9]{40}$/.test(poolAddress)) {
+      try {
+        if (isLifiBackendEnabled() && chainLower === "base") {
+          const lifiResolved = await discoverLifiOpportunities(
+            chainLower,
+            undefined,
+            assetUpper,
+            25,
+          );
+          const lifiMatch = lifiResolved.opportunities.find((o) => {
+            const protocolName = (o.protocol || "").toLowerCase();
+            const poolName = (o.pool || "").toLowerCase();
+            const id = (o.pool_address || "").toLowerCase();
+            return (
+              protocolName.includes(protocolLower) ||
+              poolName.includes(protocolLower) ||
+              id.includes(protocolLower) ||
+              protocolLower.includes(protocolName) ||
+              protocolLower.includes(poolName)
+            );
+          });
+          if (lifiMatch?.pool_address) {
+            return await prepareLifiDeposit(lifiMatch.pool_address, asset, amount, chain, walletAddress);
+          }
+        }
+
+        const resolved = await discoverOpportunities(
+          chainLower,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          assetUpper,
+          25,
+        );
+        const match = resolved.opportunities.find((o) => {
+          const protocolName = (o.protocol || "").toLowerCase();
+          const poolName = (o.pool || "").toLowerCase();
+          const address = (o.pool_address || "").toLowerCase();
+          return (
+            protocolName.includes(protocolLower) ||
+            poolName.includes(protocolLower) ||
+            address.includes(protocolLower) ||
+            protocolLower.includes(protocolName) ||
+            protocolLower.includes(poolName)
+          );
+        });
+        if (match?.pool_address && /^0x[a-fA-F0-9]{40}$/.test(match.pool_address)) {
+          poolAddress = match.pool_address;
+        }
+      } catch (resolveErr) {
+        console.warn("[prepareDeposit] Base vault auto-resolve failed:", resolveErr instanceof Error ? resolveErr.message : resolveErr);
+      }
+    }
+
+    if (!poolAddress || !/^0x[a-fA-F0-9]{40}$/.test(poolAddress)) {
+      throw new Error(`Pool/vault address is required for ${protocol}. Provide the vault contract address as pool_address.`);
+    }
+
+    const chainId = CHAIN_IDS[chainLower] || 1;
+    const vaultAddr = poolAddress as `0x${string}`;
+    txData = {
+      to: vaultAddr,
+      data: encodeTxData(VAULT_ABI, "deposit", [amountRaw, walletAddress]),
+      value: BigInt(0),
+      chain_id: chainId,
+      gas_estimate: "~250,000 gas",
+      gas_cost_usd: "~$0.50",
+      description: `Deposit ${amount} ${asset} into ${protocol} vault`,
+      protocol,
+      action: "deposit",
+      asset: assetUpper,
+      amount,
+    };
+    spender = vaultAddr;
+    estimatedApy = "—";
+    riskLevel = "high";
+    console.log("[prepareDeposit] Using generic ERC-4626 path for", protocol, "→", vaultAddr);
   }
 
-  const allowance = await checkAllowance(chainLower, asset, walletAddress, spender);
+  const isNativeAsset = TOKEN_ADDRESSES[chainLower]?.[assetUpper] === NATIVE_TOKEN_ADDRESS;
+  console.log("[prepareDeposit] isNativeAsset:", isNativeAsset);
+  let allowance: AllowanceData | { needs_approval: boolean };
+  try {
+    allowance = isNativeAsset
+      ? { needs_approval: false }
+      : await checkAllowance(chainLower, asset, walletAddress, spender);
+    console.log("[prepareDeposit] allowance check done, needs_approval:", allowance.needs_approval);
+  } catch (allowanceErr) {
+    console.error("[prepareDeposit] checkAllowance failed:", allowanceErr instanceof Error ? allowanceErr.message : allowanceErr);
+    allowance = { needs_approval: true };
+  }
+  
   let approvalTx: TransactionData | undefined;
   
   if (allowance.needs_approval) {
-    approvalTx = await prepareApproval(chainLower, asset, spender);
+    try {
+      approvalTx = await prepareApproval(chainLower, asset, spender);
+      console.log("[prepareDeposit] approvalTx prepared");
+    } catch (approvalErr) {
+      console.error("[prepareDeposit] prepareApproval failed:", approvalErr instanceof Error ? approvalErr.message : approvalErr);
+      approvalTx = undefined;
+    }
   }
 
+  console.log("[prepareDeposit] SUCCESS - returning preparation");
   return {
     transaction: txData,
     needs_approval: allowance.needs_approval,
@@ -1803,7 +2414,28 @@ export async function prepareWithdraw(
   amount: string,
   walletAddress: string,
 ): Promise<WithdrawPreparation> {
-  const [protocol, chain, asset] = positionId.toLowerCase().split("-");
+  console.log("[prepareWithdraw] input:", { positionId, amount, walletAddress });
+  const isLifiFormat = positionId.includes(":");
+  let protocol: string;
+  let chain: string;
+  let asset: string;
+
+  if (isLifiFormat) {
+    const parts = positionId.split(":");
+    const chainIdNum = parts[0];
+    protocol = (parts[1] || "").toLowerCase();
+    asset = (parts[2] || "").toUpperCase();
+    const chainMap: Record<string, string> = {
+      "8453": "base", "1": "ethereum", "42161": "arbitrum",
+      "10": "optimism", "137": "polygon", "43114": "avalanche", "56": "bnb",
+    };
+    chain = chainMap[chainIdNum] || "base";
+  } else {
+    [protocol, chain, asset] = positionId.toLowerCase().split("-");
+    asset = asset.toUpperCase();
+  }
+  console.log("[prepareWithdraw] parsed:", { protocol, chain, asset, isLifiFormat });
+
   const assetUpper = asset.toUpperCase();
   const decimals = TOKEN_DECIMALS[assetUpper] || 18;
   const withdrawAll = amount.toLowerCase() === "max";
@@ -1888,7 +2520,103 @@ export async function prepareWithdraw(
       amount: withdrawAll ? "all" : amount,
     };
   } else {
-    throw new Error(`Unsupported protocol for withdrawal: ${protocol}`);
+    let vaultAddress: string | null = null;
+    const protocolLower = protocol.toLowerCase();
+
+    const positions = await getPositions(walletAddress, undefined, chain).catch(() => null);
+    const matchingPosition = positions?.positions.find(
+      (p) => p.position_id.toLowerCase() === positionId.toLowerCase()
+    );
+
+    if (matchingPosition?.pool_address && /^0x[a-fA-F0-9]{40}$/.test(matchingPosition.pool_address)) {
+      const addrLower = matchingPosition.pool_address.toLowerCase();
+      const isKnownToken = Object.values(TOKEN_ADDRESSES).some((chainTokens) =>
+        Object.values(chainTokens).some((ta) => ta.toLowerCase() === addrLower)
+      );
+      if (!isKnownToken) {
+        vaultAddress = matchingPosition.pool_address;
+      }
+    }
+
+    if (!vaultAddress) {
+      const protocolVaults = PROTOCOL_VAULT_ADDRESSES[chain]?.[protocolLower];
+      if (protocolVaults?.[assetUpper]) {
+        vaultAddress = protocolVaults[assetUpper];
+      }
+    }
+
+    if (!vaultAddress && isLifiBackendEnabled() && chain === "base") {
+      try {
+        const lifiOpps = await discoverLifiOpportunities(chain, undefined, assetUpper, 50);
+        const match = lifiOpps.opportunities.find((o) => {
+          const protoName = (o.protocol || "").toLowerCase();
+          return protoName.includes(protocolLower) || protocolLower.includes(protoName);
+        });
+        if (match?.pool_address && /^0x[a-fA-F0-9]{40}$/.test(match.pool_address)) {
+          vaultAddress = match.pool_address;
+        }
+      } catch (_) {
+        console.warn("[prepareWithdraw] LI.FI vault lookup failed");
+      }
+    }
+
+    if (!vaultAddress) {
+      try {
+        const resolved = await discoverOpportunities(chain, undefined, undefined, undefined, undefined, assetUpper, 50);
+        const match = resolved.opportunities.find((o) => {
+          const protoName = (o.protocol || "").toLowerCase();
+          return protoName.includes(protocolLower) || protocolLower.includes(protoName);
+        });
+        if (match?.pool_address && /^0x[a-fA-F0-9]{40}$/.test(match.pool_address)) {
+          vaultAddress = match.pool_address;
+        }
+      } catch (_) {
+        console.warn("[prepareWithdraw] DeFi Llama vault lookup failed");
+      }
+    }
+
+    if (!vaultAddress) {
+      console.error("[prepareWithdraw] NO vault address found for:", { protocolLower, chain, assetUpper, positionId });
+      throw new Error(`Cannot find vault address for ${protocol} on ${chain}. The protocol may not support direct withdrawal through this tool.`);
+    }
+    console.log("[prepareWithdraw] vault resolved:", vaultAddress);
+
+    const isMorphoProtocol = protocolLower.includes("morpho");
+    const withdrawAbi = isMorphoProtocol ? MORPHO_MARKET_ABI : ERC4626_WITHDRAW_ABI;
+
+    const gasEstimate = await getGasEstimate(chain, "withdraw").catch(() => ({
+      chain, gas_price_gwei: 0.005, estimated_cost_usd: "~$0.01", estimated_cost_eth: "0", action: "withdraw", timestamp: Date.now(),
+    }));
+    const ethPrice = await getEthPrice().catch(() => 3500);
+    const gasCostEth = (gasEstimate.gas_price_gwei * 200000) / 1e9;
+
+    if (positions && (!currentValueUsd || currentValueUsd === "$0.00")) {
+      const pos = positions.positions.find(
+        (p) => p.position_id.toLowerCase() === positionId.toLowerCase()
+      );
+      if (pos) currentValueUsd = pos.current_value;
+    }
+
+    const displayProtocol = protocol
+      .split("-")
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ");
+
+    txData = {
+      to: vaultAddress as `0x${string}`,
+      data: encodeTxData(withdrawAbi, "withdraw", [amountRaw, walletAddress, walletAddress]),
+      value: BigInt(0),
+      chain_id: CHAIN_IDS[chain] || 8453,
+      gas_estimate: isMorphoProtocol ? "~250,000 gas" : "~200,000 gas",
+      gas_cost_usd: `$${(gasCostEth * ethPrice).toFixed(2)}`,
+      description: withdrawAll
+        ? `Withdraw all ${asset} from ${displayProtocol}`
+        : `Withdraw ${amount} ${asset} from ${displayProtocol}`,
+      protocol: displayProtocol,
+      action: "withdraw",
+      asset: assetUpper,
+      amount: withdrawAll ? "all" : amount,
+    };
   }
 
   return {
@@ -1994,4 +2722,114 @@ export async function executeWithdraw(
       requires_signature: false,
     };
   }
+}
+
+export interface PortfolioSummary {
+  wallet_address: string;
+  total_value_usd: string;
+  token_balances: Array<{
+    token: string;
+    balance: string;
+    usd_value: string;
+    chain: string;
+  }>;
+  positions: AavePosition[];
+  position_count: number;
+  chains: string[];
+  protocols: string[];
+}
+
+export async function getPortfolioSummary(
+  walletAddress: string,
+  chain?: string,
+): Promise<PortfolioSummary> {
+  const targetChain = chain || "base";
+
+  const baseTokens = Object.keys(TOKEN_ADDRESSES[targetChain] || {});
+  const balancePromises = baseTokens.map(async (token) => {
+    try {
+      const bal = await checkTokenBalance(targetChain, token, walletAddress);
+      const numBal = parseFloat(bal.balance);
+      if (numBal === 0) return null;
+      return {
+        token: bal.token,
+        balance: bal.balance,
+        usd_value: `$${bal.usd_value.toFixed(2)}`,
+        chain: bal.chain,
+      };
+    } catch {
+      return null;
+    }
+  });
+
+  const [balanceResults, positionsData] = await Promise.allSettled([
+    Promise.all(balancePromises),
+    getPositions(walletAddress, undefined, targetChain),
+  ]);
+
+  const tokenBalances = balanceResults.status === "fulfilled"
+    ? (balanceResults.value.filter((b): b is NonNullable<typeof b> => b !== null))
+    : [];
+
+  const positions = positionsData.status === "fulfilled" ? positionsData.value.positions : [];
+  const totalBalances = tokenBalances.reduce((sum, b) => {
+    const val = parseFloat(b.usd_value.replace(/[$,]/g, ""));
+    return sum + (isNaN(val) ? 0 : val);
+  }, 0);
+
+  const totalPositionValue = positionsData.status === "fulfilled"
+    ? parseFloat(positionsData.value.total_value.replace(/[$,]/g, "")) || 0
+    : 0;
+
+  const totalValue = totalBalances + totalPositionValue;
+  const chains = [...new Set([...tokenBalances.map(b => b.chain), ...positionsData.status === "fulfilled" ? positionsData.value.chains : []])];
+  const protocols = positionsData.status === "fulfilled" ? positionsData.value.protocols : [];
+
+  return {
+    wallet_address: walletAddress.toLowerCase(),
+    total_value_usd: `$${totalValue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+    token_balances: tokenBalances,
+    positions,
+    position_count: positions.length,
+    chains,
+    protocols,
+  };
+}
+
+export interface MarketOverview {
+  eth_price: number;
+  eth_change_24h: number | null;
+  base_gas_gwei: number;
+  base_gas_usd: string;
+  top_opportunities: Opportunity[];
+  total_base_opportunities: number;
+}
+
+export async function getMarketOverview(
+  asset?: string,
+): Promise<MarketOverview> {
+  const cacheKey = `market:${asset || "all"}`;
+  const cached = cache.get<MarketOverview>(cacheKey);
+  if (cached) return cached;
+
+  const [priceData, gasData, oppData] = await Promise.allSettled([
+    getTokenPrice("ETH"),
+    getGasEstimate("base"),
+    discoverOpportunities("base", undefined, undefined, undefined, "apy", asset, 7),
+  ]);
+
+  const ethPrice = priceData.status === "fulfilled" ? priceData.value : { price: 3500, change_24h: null };
+  const gas = gasData.status === "fulfilled" ? gasData.value : { gas_price_gwei: 0.006, estimated_cost_usd: "~$0.00" };
+  const opps = oppData.status === "fulfilled" ? oppData.value : { opportunities: [], total_count: 0 };
+
+  const result: MarketOverview = {
+    eth_price: ethPrice.price,
+    eth_change_24h: ethPrice.change_24h,
+    base_gas_gwei: gas.gas_price_gwei,
+    base_gas_usd: gas.estimated_cost_usd,
+    top_opportunities: opps.opportunities.slice(0, 7),
+    total_base_opportunities: opps.total_count,
+  };
+  cache.set(cacheKey, result, CACHE_TTL.MARKET_OVERVIEW);
+  return result;
 }
