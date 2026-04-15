@@ -117,6 +117,23 @@ function ThinkingAnimation() {
   );
 }
 
+function YieldMindLogo({ compact = false, hideLabelOnMobile = false }: { compact?: boolean; hideLabelOnMobile?: boolean }) {
+  return (
+    <div className="flex items-center gap-2">
+      <img src="/logo.png" alt="YieldMind" className={cn("object-contain", compact ? "h-4 w-auto" : "h-6 w-auto")} />
+      <span
+        className={cn(
+          "font-semibold tracking-tight text-white",
+          compact ? "text-sm" : "text-lg",
+          hideLabelOnMobile && "hidden sm:inline",
+        )}
+      >
+        YieldMind
+      </span>
+    </div>
+  );
+}
+
 function BlinkingCursor() {
   return (
     <span className="inline-block h-4 w-[3px] translate-y-0.5 rounded-sm bg-[#88fff7]/70 ml-0.5 align-middle [animation:blink_1s_step-end_infinite]" />
@@ -497,49 +514,58 @@ function EmptyState({ onSuggestion }: { onSuggestion: (s: string) => void }) {
   const [showVaults, setShowVaults] = useState(false);
 
   return (
-    <div className="flex flex-1 items-start justify-center pt-10">
-      <div className="max-w-lg text-center w-full">
-        <div className="mx-auto mb-8 flex h-16 w-16 items-center justify-center rounded-2xl border border-[#88fff7]/10 bg-[#88fff7]/[0.04]">
-          <Sparkles size={28} className="text-[#88fff7]/50" />
+    <div className="flex flex-1 items-center justify-center px-4 py-8 sm:py-12">
+      <div className="w-full max-w-xl text-center sm:max-w-2xl">
+        <div className="mb-7 flex justify-center">
+          <img src="/logo.png" alt="YieldMind" className="h-16 w-auto object-contain" />
         </div>
         <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-[#88fff7]/10 bg-[#88fff7]/5 px-4 py-1.5 text-xs font-medium text-[#88fff7]/60">
           AI-Powered DeFi Agent
         </div>
-        <h2 className="text-2xl font-semibold tracking-tight text-white/90">What would you like to optimize?</h2>
-        <p className="mt-3 text-sm leading-relaxed text-gray-400">
+        <h2 className="text-2xl font-semibold tracking-tight text-white/90 sm:text-3xl">
+          What would you like to optimize?
+        </h2>
+        <p className="mx-auto mt-3 max-w-2xl text-sm leading-relaxed text-gray-400 sm:text-base">
           Describe your yield goal and YieldMind will research protocols, check your positions, and build a strategy.
         </p>
-        <div className="mt-8 grid gap-2.5">
+        <div className="mx-auto mt-8 grid w-full max-w-5xl grid-cols-2 gap-3 lg:grid-cols-4">
           {QUICK_ACTIONS.slice(0, 3).map(({ text, icon: Icon }) => (
             <button
               key={text}
               onClick={() => onSuggestion(text)}
-              className="group flex items-center gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 text-left text-sm text-gray-400 backdrop-blur-sm transition-all hover:border-[#88fff7]/15 hover:bg-[#88fff7]/[0.04] hover:text-gray-200"
+              className="group relative flex min-h-24 flex-col justify-between overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.02] p-4 text-left text-sm text-gray-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] transition-all hover:-translate-y-0.5 hover:border-[#88fff7]/20 hover:bg-[#88fff7]/[0.05] hover:text-white"
             >
-              <Icon size={16} className="text-white/20 group-hover:text-[#88fff7]/60 transition-colors" />
-              <span className="flex-1">{text}</span>
-              <ChevronRight size={14} className="text-white/10 group-hover:text-white/30 transition-colors" />
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(136,255,247,0.08),transparent_42%)] opacity-0 transition-opacity group-hover:opacity-100" />
+              <div className="relative flex items-start justify-between gap-3">
+                <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/[0.06] bg-white/[0.03] text-white/25 transition-colors group-hover:border-[#88fff7]/20 group-hover:bg-[#88fff7]/[0.08] group-hover:text-[#88fff7]/70">
+                  <Icon size={16} />
+                </span>
+                <ChevronRight size={14} className="mt-1 text-white/10 transition-colors group-hover:text-white/35" />
+              </div>
+              <span className="relative mt-4 block text-sm font-medium leading-snug">{text}</span>
             </button>
           ))}
-        </div>
 
-        <div className="mt-8">
           <button
             onClick={() => setShowVaults((v) => !v)}
-            className="group flex w-full items-center justify-between rounded-xl border border-[#88fff7]/10 bg-[#88fff7]/[0.03] px-4 py-3 text-sm text-[#88fff7]/60 transition-all hover:border-[#88fff7]/20 hover:bg-[#88fff7]/[0.06] hover:text-[#88fff7]/80"
+            className="group relative flex min-h-24 flex-col justify-between overflow-hidden rounded-2xl border border-[#88fff7]/15 bg-[#88fff7]/[0.04] p-4 text-left text-sm text-[#88fff7]/70 shadow-[inset_0_1px_0_rgba(136,255,247,0.04)] transition-all hover:-translate-y-0.5 hover:border-[#88fff7]/30 hover:bg-[#88fff7]/[0.08] hover:text-[#88fff7]/90"
           >
-            <span className="flex items-center gap-2">
-              <TrendingUp size={16} />
-              Browse LI.FI Earn Vaults
-            </span>
-            {showVaults ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          </button>
-          {showVaults && (
-            <div className="mt-3 rounded-xl border border-white/[0.04] bg-white/[0.01] p-4">
-              <VaultList />
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(136,255,247,0.1),transparent_42%)] opacity-0 transition-opacity group-hover:opacity-100" />
+            <div className="relative flex items-start justify-between gap-3">
+              <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#88fff7]/15 bg-[#88fff7]/[0.06] text-[#88fff7]/70 transition-colors group-hover:border-[#88fff7]/25 group-hover:bg-[#88fff7]/[0.12] group-hover:text-[#88fff7]">
+                <TrendingUp size={16} />
+              </span>
+              {showVaults ? <ChevronDown size={14} className="mt-1 text-[#88fff7]/70" /> : <ChevronRight size={14} className="mt-1 text-[#88fff7]/50" />}
             </div>
-          )}
+            <span className="relative mt-4 block text-sm font-medium leading-snug">Browse LI.FI Earn Vaults</span>
+          </button>
         </div>
+
+        {showVaults && (
+          <div className="mt-3 rounded-xl border border-white/[0.04] bg-white/[0.01] p-4">
+            <VaultList />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -855,10 +881,7 @@ function Sidebar({
         <div className="flex flex-col h-full">
           <div className="flex items-center justify-between px-4 py-4 border-b border-white/5">
             <Link href="/" className="flex items-center gap-2.5">
-              <div className="flex items-center justify-center h-7 w-7 rounded-lg bg-[#88fff7]/10">
-                <Sparkles size={14} className="text-[#88fff7]/70" />
-              </div>
-              <span className="text-sm font-semibold tracking-tight text-white">YieldMind</span>
+              <YieldMindLogo compact />
             </Link>
             <button
               onClick={onToggle}
@@ -1524,10 +1547,7 @@ export default function ChatPage() {
             )}
             {!sidebarOpen && (
               <Link href="/" className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-white/5">
-                <div className="flex items-center justify-center h-6 w-6 rounded-md bg-white/10">
-                  <Sparkles size={13} className="text-white/70" />
-                </div>
-                <span className="text-sm font-semibold tracking-tight text-white hidden sm:inline">YieldMind</span>
+                <YieldMindLogo compact hideLabelOnMobile />
               </Link>
             )}
           </div>
@@ -1543,7 +1563,13 @@ export default function ChatPage() {
         </header>
 
         <div className="relative z-10 flex flex-1 flex-col overflow-hidden px-4">
-          <div ref={viewportRef} className="chat-viewport mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-y-auto px-2 pb-4 pt-4">
+          <div
+            ref={viewportRef}
+            className={cn(
+              "chat-viewport mx-auto flex w-full max-w-4xl flex-1 flex-col px-2 pt-4 pb-4",
+              messages.length === 0 ? "overflow-hidden" : "overflow-y-auto",
+            )}
+          >
             {messages.length === 0 ? (
               <EmptyState onSuggestion={handleSuggestion} />
             ) : (

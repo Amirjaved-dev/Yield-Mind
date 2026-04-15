@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { Plus, Mic } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { ConnectButton as RainbowConnectButton } from "@rainbow-me/rainbowkit";
 import { useAccount } from "wagmi";
 import { ChainSelector } from "@/components/ChainSelector";
@@ -53,15 +53,12 @@ export default function Home() {
     <div className="min-h-screen bg-[#061514] text-white font-sans">
       <nav className="flex items-center justify-between px-6 py-4 max-w-7xl mx-auto">
         <div className="flex items-center gap-2">
-          <span className="w-2.5 h-2.5 rounded-full bg-white" />
+          <img src="/logo.png" alt="YieldMind" className="h-6 w-auto object-contain" />
           <span className="text-lg font-semibold tracking-tight">YieldMind</span>
         </div>
 
         <div className="hidden md:flex items-center gap-8 text-sm">
-          <a href="#" className="text-gray-300 hover:text-white transition-colors">FAQ</a>
-          <a href="#" className="text-gray-300 hover:text-white transition-colors">Docs</a>
-          <a href="#" className="text-gray-300 hover:text-white transition-colors">Protocol</a>
-          <a href="#" className="text-[#f59e0b] font-medium">Agent</a>
+          <a href="/chat" className="text-[#f59e0b] font-medium hover:text-[#fbbf24] transition-colors">Launch Agent</a>
         </div>
 
         <div className="flex items-center gap-3">
@@ -113,23 +110,15 @@ export default function Home() {
                     onKeyDown={handleKeyDown}
                     className="w-full bg-transparent text-white placeholder-gray-500 resize-none outline-none text-base leading-relaxed"
                   />
-                  <div className="flex items-center justify-between mt-3 pt-2">
-                    <div className="flex items-center gap-2">
-                      <button className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-gray-400 hover:bg-white/15 hover:text-white transition-all">
-                        <Plus size={18} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleSubmit}
-                        disabled={!prompt.trim()}
-                        className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-[#1A2726] border border-white/10 text-sm text-gray-200 hover:bg-[#223231] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-                        Run Agent
-                      </button>
-                    </div>
-                    <button className="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center text-gray-400 hover:bg-white/15 hover:text-white transition-all">
-                      <Mic size={18} />
+                  <div className="flex items-center justify-end mt-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={handleSubmit}
+                      disabled={!prompt.trim()}
+                      className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-gradient-to-r from-[#f59e0b] to-[#d97706] text-sm font-medium text-white hover:from-[#fbbf24] hover:to-[#f59e0b] transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-amber-500/15"
+                    >
+                      <Sparkles size={16} />
+                      Run Agent
                     </button>
                   </div>
                 </div>
